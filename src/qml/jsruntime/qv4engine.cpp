@@ -74,6 +74,9 @@
 #include <private/qv4value_p.h>
 #include <private/qv4variantassociationobject_p.h>
 #include <private/qv4variantobject_p.h>
+#if QT_CONFIG(future)
+#include <private/qv4futureobject_p.h>
+#endif
 
 #include <QtQml/qqmlfile.h>
 
@@ -651,6 +654,11 @@ ExecutionEngine::ExecutionEngine(QJSEngine *jsEngine)
     jsObjects[VariantAssociationProto] = memoryManager->allocate<VariantAssociationPrototype>();
     Q_ASSERT(variantAssociationPrototype()->getPrototypeOf() == objectPrototype()->d());
 
+#if QT_CONFIG(future)
+    jsObjects[FutureProto] = memoryManager->allocate<FuturePrototype>();
+    Q_ASSERT(futurePrototype()->getPrototypeOf() == objectPrototype()->d());
+#endif
+
     ic = newInternalClass(SequencePrototype::staticVTable(), SequencePrototype::defaultPrototype(this));
     jsObjects[SequenceProto] = ScopedValue(scope, memoryManager->allocObject<SequencePrototype>(ic->d()));
 
@@ -725,6 +733,9 @@ ExecutionEngine::ExecutionEngine(QJSEngine *jsEngine)
     static_cast<StringIteratorPrototype *>(stringIteratorPrototype())->init(this);
 
     static_cast<VariantPrototype *>(variantPrototype())->init();
+#if QT_CONFIG(future)
+    static_cast<FuturePrototype *>(futurePrototype())->init();
+#endif
 
     sequencePrototype()->cast<SequencePrototype>()->init();
 
@@ -1238,6 +1249,13 @@ Heap::Object *ExecutionEngine::newVariantObject(const QMetaType type, const void
     return memoryManager->allocate<VariantObject>(type, data);
 }
 
+#if QT_CONFIG(future)
+Heap::Object *ExecutionEngine::newFutureObject(const QMetaType type, const void *data)
+{
+    return memoryManager->allocate<FutureObject>(type, data);
+}
+#endif
+
 Heap::Object *ExecutionEngine::newForInIteratorObject(Object *o)
 {
     Scope scope(this);
@@ -1575,6 +1593,10 @@ static QVariant toVariant(const QV4::Value &value, QMetaType metaType, JSToQVari
 {
     Q_ASSERT (!value.isEmpty());
 
+#if QT_CONFIG(future)
+    if (const QV4::FutureObject *f = value.as<QV4::FutureObject>())
+        return f->d()->future();
+#endif
     if (const QV4::VariantObject *v = value.as<QV4::VariantObject>())
         return v->d()->data();
 
@@ -2015,6 +2037,11 @@ QV4::ReturnedValue ExecutionEngine::fromData(
             return a.asReturnedValue();
         }
     }
+
+#if QT_CONFIG(future)
+    if (FutureObject::isFutureType(metaType))
+        return QV4::Encode(newFutureObject(metaType, ptr));
+#endif
 
     return QV4::Encode(newVariantObject(metaType, ptr));
 }
@@ -2822,6 +2849,19 @@ bool ExecutionEngine::metaTypeFromJS(const Value &value, QMetaType metaType, voi
 
     if (convertToNativeQObject(value, metaType, reinterpret_cast<void **>(data)))
         return true;
+
+#if QT_CONFIG(future)
+    if (const QV4::FutureObject *futureObject = value.as<QV4::FutureObject>()) {
+        const QVariant &future = futureObject->d()->future();
+        if (future.metaType() == metaType) {
+            metaType.destruct(data);
+            metaType.construct(data, future.constData());
+            return true;
+        }
+        if (QMetaType::canConvert(future.metaType(), metaType))
+            return QMetaType::convert(future.metaType(), future.constData(), metaType, data);
+    }
+#endif
 
     const bool isPointer = (metaType.flags() & QMetaType::IsPointer);
     const QV4::VariantObject *variantObject = value.as<QV4::VariantObject>();
