@@ -13,6 +13,7 @@ add_subdirectory(parserstress)
 add_subdirectory(linebylinelex)
 add_subdirectory(qjsprimitivevalue)
 add_subdirectory(qjsvalueiterator)
+add_subdirectory(qqmlfuture)
 add_subdirectory(qjsonbinding)
 add_subdirectory(qqmlfile)
 
