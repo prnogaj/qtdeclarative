@@ -684,6 +684,11 @@ qt_internal_extend_target(Qml CONDITION WIN32 AND NOT (TEST_architecture_arch ST
         jsruntime/qv4functiontable_noop.cpp
 )
 
+qt_internal_extend_target(Qml CONDITION QT_FEATURE_future
+    SOURCES
+        jsruntime/qv4futureobject.cpp jsruntime/qv4futureobject_p.h
+)
+
 qt_internal_extend_target(Qml CONDITION valgrind
     DEFINES
         V4_USE_VALGRIND
