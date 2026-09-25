@@ -1570,6 +1570,17 @@ QQmlJSRegisterContent QQmlJSTypeResolver::lengthProperty(
             QQmlJSRegisterContent::InvalidLookupIndex, QQmlJSRegisterContent::Property, scope);
 }
 
+/*!
+    \internal
+    Returns \c true if \a type is a QFuture<T>. The QML engine exposes such a future as a
+    thenable JavaScript object with \c then() and \c catch() methods. qmltyperegistrar
+    describes it as an opaque value type named after the C++ type moc reports.
+*/
+bool QQmlJSTypeResolver::isFuture(const QQmlJSScope::ConstPtr &type) const
+{
+    return type && type->isOpaqueType() && type->internalName().startsWith(u"QFuture<"_s);
+}
+
 QQmlJSRegisterContent QQmlJSTypeResolver::memberType(
         QQmlJSRegisterContent type, const QString &name, int baseLookupIndex,
         int resultLookupIndex) const
