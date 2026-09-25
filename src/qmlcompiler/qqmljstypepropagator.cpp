@@ -970,7 +970,12 @@ void QQmlJSTypePropagator::generate_CallProperty(int nameIndex, int base, int ar
     const auto member = m_typeResolver->memberType(callBase, propertyName);
 
     if (!member.isMethod()) {
-        if (callBase.contains(m_typeResolver->jsValueType())
+        // A QFuture is a thenable in JavaScript. Call its then() and catch() like any other
+        // JavaScript function.
+        const bool isThenableCall = m_typeResolver->isFuture(baseType)
+                && (propertyName == u"then"_s || propertyName == u"catch"_s);
+        if (isThenableCall
+                || callBase.contains(m_typeResolver->jsValueType())
                 || callBase.contains(m_typeResolver->varType())) {
             const auto jsValueType = m_typeResolver->jsValueType();
             addReadRegister(base, jsValueType);
