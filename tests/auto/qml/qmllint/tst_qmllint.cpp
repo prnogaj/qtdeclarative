@@ -987,6 +987,11 @@ void TestQmllint::dirtyQmlCode_data()
                .addFix("Did you mean \"Hours\"?"_L1, Edit{ "Hours"_L1, 13, 62 })
                .build()
             << defaultOptions;
+    QTest::newRow("FutureMemberNotFound")
+            << QStringLiteral("futureMemberNotFound.qml")
+            << ResultBuilder::singleExpected(
+                       "Member \"finally\" not found on type \"QFuture<int>\""_L1, 7, 27)
+            << defaultOptions;
     QTest::newRow("MemberNotFound")
             << QStringLiteral("memberNotFound.qml")
             << ResultBuilder::singleExpected("Member \"foo\" not found on type \"memberNotFound\""_L1, 6, 31)
@@ -3178,6 +3183,7 @@ void TestQmllint::cleanQmlCode_data()
     const CallQmllintOptions defaultOptions;
 
     QTest::newRow("2Behavior") << QStringLiteral("2behavior.qml") << defaultOptions;
+    QTest::newRow("futureThen") << QStringLiteral("futureThen.qml") << defaultOptions;
     QTest::newRow("Accessible") << QStringLiteral("accessible.qml") << defaultOptions;
     QTest::newRow("AddressableValue") << QStringLiteral("addressableValue.qml") << defaultOptions;
     QTest::newRow("AttachedProps") << QStringLiteral("AttachedProps.qml") << defaultOptions;
