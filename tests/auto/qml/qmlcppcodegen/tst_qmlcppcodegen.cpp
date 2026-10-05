@@ -72,6 +72,7 @@ private slots:
     void array();
     void arrayCtor();
     void asCast();
+    void assignListPropertyToCppList();
     void attachedBaseEnum();
     void attachedSelf();
     void attachedType();
@@ -4024,6 +4025,32 @@ void tst_QmlCppCodegen::detachedValues()
             o.get(), "createdAfterSideEffect", Q_RETURN_ARG(double, result), Q_ARG(double, 1.5)));
     QCOMPARE(result, 5.5);
     QCOMPARE(o->property("counter").toInt(), 6);
+}
+
+void tst_QmlCppCodegen::assignListPropertyToCppList()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/assignListPropertyToCppList.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    BirthdayParty *party = o->property("party").value<BirthdayParty *>();
+    QVERIFY(party);
+    QCOMPARE(party->guestCount(), 0);
+
+    // Assigning a list property replaces the contents of the other one.
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "assignPeople"));
+    QCOMPARE(party->guestCount(), 2);
+    QCOMPARE(party->guest(0)->name(), u"a"_s);
+    QCOMPARE(party->guest(1)->name(), u"b"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "assignPeople"));
+    QCOMPARE(party->guestCount(), 2);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "assignOthers"));
+    QCOMPARE(party->guestCount(), 1);
+    QCOMPARE(party->guest(0)->name(), u"c"_s);
 }
 
 void tst_QmlCppCodegen::closureArrayMethods()
