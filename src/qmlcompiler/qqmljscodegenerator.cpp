@@ -3018,19 +3018,29 @@ void QQmlJSCodeGenerator::generate_ConstructWithSpread(int func, int argc, int a
 void QQmlJSCodeGenerator::generate_SetUnwindHandler(int offset)
 {
     Q_UNUSED(offset)
-    REJECT(u"SetUnwindHandler"_s);
+
+    // Experiment: When an exception is thrown, we return right away, and no unwind handler
+    // runs. That is fine for the handler of a for-of loop: all it does is close the iterator,
+    // and closing an iterator over a list does nothing. The handlers of try, catch, finally,
+    // with, and of blocks with a context of their own contain instructions we reject.
+    INJECT_TRACE_INFO(generate_SetUnwindHandler);
 }
 
 void QQmlJSCodeGenerator::generate_UnwindDispatch()
 {
-    REJECT(u"UnwindDispatch"_s);
+    // There is never an exception to pass on here. See generate_SetUnwindHandler().
+    INJECT_TRACE_INFO(generate_UnwindDispatch);
 }
 
 void QQmlJSCodeGenerator::generate_UnwindToLabel(int level, int offset)
 {
+    // The unwind handlers on the way do nothing. See generate_SetUnwindHandler().
     Q_UNUSED(level)
-    Q_UNUSED(offset)
-    BYTECODE_UNIMPLEMENTED();
+    INJECT_TRACE_INFO(generate_UnwindToLabel);
+
+    generateJumpCodeWithTypeConversions(offset);
+    m_skipUntilNextLabel = true;
+    resetState();
 }
 
 void QQmlJSCodeGenerator::generate_DeadTemporalZoneCheck(int name)
@@ -3177,8 +3187,11 @@ void QQmlJSCodeGenerator::generate_GetIterator(int iterator)
     if (iterator == int(QQmlJS::AST::ForEachType::Of)) {
         if (!iteratorType.isStoredIn(m_typeResolver->forOfIteratorPtr()))
             REJECT(u"using non-iterator as iterator"_s);
-        m_body += u"const auto &" // Rely on life time extension for const refs
-                + listName + u" = " + consumedAccumulatorVariableIn();
+
+        // The list stays in its register. The iterator refers to it there. Declare the pointer
+        // without initializer, so that a jump across the declaration is legal.
+        m_body += listType.storedType()->internalName() + u" *"_s + listName + u";\n"_s;
+        m_body += listName + u" = &"_s + m_state.accumulatorVariableIn + u";\n"_s;
     }
 }
 
@@ -3192,11 +3205,12 @@ void QQmlJSCodeGenerator::generate_IteratorNext(int value, int offset)
         REJECT(u"using non-iterator as iterator"_s);
 
     const QQmlJSScope::ConstPtr iteratorType = iteratorContent.storedType();
-    const QString listName = m_state.accumulatorVariableIn
+    // See generate_GetIterator() for the pointer to the list. It is a local, not a register.
+    const QString listName = m_state.accumulatorVariableIn.mid(2)
             + u"List" + QString::number(iteratorContent.baseLookupIndex());
     QString qjsList;
     if (iteratorType == m_typeResolver->forOfIteratorPtr())
-        qjsList = u"QJSList(&" + listName + u", aotContext->engine)";
+        qjsList = u"QJSList(" + listName + u", aotContext->engine)";
     else if (iteratorType != m_typeResolver->forInIteratorPtr())
         REJECT(u"using non-iterator as iterator"_s);
 
@@ -3230,7 +3244,8 @@ void QQmlJSCodeGenerator::generate_IteratorNextForYieldStar(int iterator, int ob
 
 void QQmlJSCodeGenerator::generate_IteratorClose()
 {
-    BYTECODE_UNIMPLEMENTED();
+    // generate_GetIterator() only accepts lists. Their iterators have nothing to close.
+    INJECT_TRACE_INFO(generate_IteratorClose);
 }
 
 void QQmlJSCodeGenerator::generate_DestructureRestElement()

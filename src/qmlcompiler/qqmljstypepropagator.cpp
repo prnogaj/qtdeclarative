@@ -1898,10 +1898,10 @@ void QQmlJSTypePropagator::generate_UnwindDispatch()
 
 void QQmlJSTypePropagator::generate_UnwindToLabel(int level, int offset)
 {
-    m_state.setHasInternalSideEffects();
+    // Experiment: The unwind handlers we accept do nothing. See
+    // QQmlJSCodeGenerator::generate_SetUnwindHandler(). So this is a jump.
     Q_UNUSED(level)
-    Q_UNUSED(offset)
-    INSTR_PROLOGUE_NOT_IMPLEMENTED();
+    generate_Jump(offset);
 }
 
 void QQmlJSTypePropagator::generate_DeadTemporalZoneCheck(int name)

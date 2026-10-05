@@ -163,6 +163,7 @@ private slots:
     void finalProperty();
     void flagEnum();
     void flushBeforeCapture();
+    void forOfList();
     void fromBoolValue();
     void funcWithParams();
     void functionArguments();
@@ -4051,6 +4052,64 @@ void tst_QmlCppCodegen::assignListPropertyToCppList()
     QVERIFY(QMetaObject::invokeMethod(o.get(), "assignOthers"));
     QCOMPARE(party->guestCount(), 1);
     QCOMPARE(party->guest(0)->name(), u"c"_s);
+}
+
+void tst_QmlCppCodegen::forOfList()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/forOfList.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    double result = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumUpTo", Q_RETURN_ARG(double, result), Q_ARG(double, 3.0)));
+    QCOMPARE(result, 4.0);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumUpTo", Q_RETURN_ARG(double, result), Q_ARG(double, 10.0)));
+    QCOMPARE(result, 8.0);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumOfArgument", Q_RETURN_ARG(double, result),
+            Q_ARG(QList<double>, QList<double>({ 1, 2, 3.5 }))));
+    QCOMPARE(result, 6.5);
+    QCOMPARE(o->property("last").toDouble(), 3.5);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumOfArgument", Q_RETURN_ARG(double, result),
+            Q_ARG(QList<double>, QList<double>())));
+    QCOMPARE(result, 0.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "collectNames"));
+    QCOMPARE(o->property("names").toString(), u"ab"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "firstAbove", Q_RETURN_ARG(double, result), Q_ARG(double, 2.0),
+            Q_ARG(bool, true)));
+    QCOMPARE(result, 2.5);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "firstAbove", Q_RETURN_ARG(double, result), Q_ARG(double, 2.0),
+            Q_ARG(bool, false)));
+    QCOMPARE(result, -1.0);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "firstAbove", Q_RETURN_ARG(double, result), Q_ARG(double, 20.0),
+            Q_ARG(bool, true)));
+    QCOMPARE(result, -1.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "nested", Q_RETURN_ARG(double, result)));
+    QCOMPARE(result, 49.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "firstTwo", Q_RETURN_ARG(double, result)));
+    QCOMPARE(result, 0.5);
+
+    // An exception thrown in the loop ends the function. The engine works afterwards.
+    QQmlExpression caught(
+            qmlContext(o.get()), o.get(),
+            u"(function() { try { throwing() } catch (e) { return 'caught ' + e } return 'none' })()"_s);
+    QCOMPARE(caught.evaluate().toString(), u"caught negative"_s);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumUpTo", Q_RETURN_ARG(double, result), Q_ARG(double, 10.0)));
+    QCOMPARE(result, 8.0);
 }
 
 void tst_QmlCppCodegen::closureArrayMethods()

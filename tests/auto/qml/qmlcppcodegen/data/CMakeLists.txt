@@ -204,6 +204,7 @@ set(qml_files
     fallbackresettable.qml
     finalUser.qml
     flagEnum.qml
+    forOfList.qml
     fromBoolValue.qml
     funcWithParams.qml
     functionCallInitCrash.qml
