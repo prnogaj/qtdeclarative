@@ -323,6 +323,7 @@ struct InternalClass : Base {
         Locked        = 1 << 4,
     };
     enum { MaxRedundantTransitions = 255 };
+    enum { MinDeadTransitions = 8 };
 
     ExecutionEngine *engine;
     const VTable *vtable;
@@ -341,6 +342,7 @@ struct InternalClass : Base {
     uint size;
     quint8 numRedundantTransitions;
     quint8 flags;
+    quint16 numDeadTransitions; // transitions whose lookup the GC has swept; saturates
 
     bool isExtensible() const { return !(flags & NotExtensible); }
     bool isSealed() const { return flags & Sealed; }

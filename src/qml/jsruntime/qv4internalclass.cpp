@@ -226,6 +226,7 @@ void InternalClass::init(ExecutionEngine *engine)
 //    parent = nullptr;
 //    size = 0;
 //    numRedundantTransitions = 0;
+//    numDeadTransitions = 0;
 //    flags = 0;
 
     Base::init();
@@ -257,6 +258,7 @@ void InternalClass::init(Heap::InternalClass *other)
     parent = other;
     size = other->size;
     numRedundantTransitions = other->numRedundantTransitions;
+    numDeadTransitions = 0;
     flags = other->flags;
     protoId = engine->newProtoId();
 
@@ -314,11 +316,28 @@ InternalClassTransition &InternalClass::lookupOrInsertTransition(const InternalC
 {
     QVarLengthArray<Transition, 1>::iterator it = std::lower_bound(transitions.begin(), transitions.end(), t);
     if (it != transitions.end() && *it == t) {
-        return *it;
-    } else {
-        it = transitions.insert(it, t);
+        // The caller is going to revive a dead transition.
+        if (!it->lookup && numDeadTransitions > 0)
+            --numDeadTransitions;
         return *it;
     }
+
+    // The transitions to classes the garbage collector has swept stay behind with a null lookup,
+    // see removeChildEntry(). Drop them once they make up half of the array. Otherwise the array
+    // grows with every transition that is used only once, for example a change to a short lived
+    // prototype, and inserting into it gets slower and slower.
+    // This is the only place where we can do that: Our callers hold on to the transition we
+    // return while they allocate the new class, and that allocation may run the garbage collector.
+    if (numDeadTransitions >= MinDeadTransitions
+            && 2 * qsizetype(numDeadTransitions) >= transitions.size()) {
+        const auto isDead = [](const Transition &transition) { return !transition.lookup; };
+        transitions.removeIf(isDead);
+        numDeadTransitions = 0;
+        it = std::lower_bound(transitions.begin(), transitions.end(), t);
+    }
+
+    it = transitions.insert(it, t);
+    return *it;
 }
 
 static void addDummyEntry(InternalClass *newClass, PropertyHash::Entry e)
@@ -634,7 +653,10 @@ void InternalClass::removeChildEntry(InternalClass *child)
     Q_ASSERT(engine);
     for (auto &t : transitions) {
         if (t.lookup == child) {
+            // Do not erase the transition here. See lookupOrInsertTransition().
             t.lookup = nullptr;
+            if (numDeadTransitions < std::numeric_limits<quint16>::max())
+                ++numDeadTransitions;
             return;
         }
     }
