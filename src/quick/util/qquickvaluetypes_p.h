@@ -105,6 +105,7 @@ public:
 
     Q_INVOKABLE QQuickVector2DValueType() = default;
     Q_INVOKABLE QQuickVector2DValueType(const QVector2D &vector2D) : QVector2D(vector2D) {}
+    Q_INVOKABLE QQuickVector2DValueType(double x, double y) : QVector2D(x, y) {}
     Q_INVOKABLE QString toString() const;
 
     qreal x() const;
@@ -142,6 +143,7 @@ public:
 
     Q_INVOKABLE QQuickVector3DValueType() = default;
     Q_INVOKABLE QQuickVector3DValueType(const QVector3D &vector3D) : QVector3D(vector3D) {}
+    Q_INVOKABLE QQuickVector3DValueType(double x, double y, double z) : QVector3D(x, y, z) {}
     Q_INVOKABLE QString toString() const;
 
     qreal x() const;
@@ -184,6 +186,9 @@ public:
 
     Q_INVOKABLE QQuickVector4DValueType() = default;
     Q_INVOKABLE QQuickVector4DValueType(const QVector4D &vector4d) : QVector4D(vector4d) {}
+    Q_INVOKABLE QQuickVector4DValueType(double x, double y, double z, double w)
+        : QVector4D(x, y, z, w)
+    {}
     Q_INVOKABLE QString toString() const;
 
     qreal x() const;
@@ -227,6 +232,9 @@ public:
 
     Q_INVOKABLE QQuickQuaternionValueType() = default;
     Q_INVOKABLE QQuickQuaternionValueType(const QQuaternion &quat) : QQuaternion(quat) {}
+    Q_INVOKABLE QQuickQuaternionValueType(double scalar, double x, double y, double z)
+        : QQuaternion(scalar, x, y, z)
+    {}
     Q_INVOKABLE QString toString() const;
 
     qreal scalar() const;
@@ -286,6 +294,14 @@ public:
     static QVariant create(const QJSValue &params);
 
     Q_INVOKABLE QQuickMatrix4x4ValueType() = default;
+    Q_INVOKABLE QQuickMatrix4x4ValueType(
+            double m11, double m12, double m13, double m14,
+            double m21, double m22, double m23, double m24,
+            double m31, double m32, double m33, double m34,
+            double m41, double m42, double m43, double m44)
+        : QMatrix4x4(m11, m12, m13, m14, m21, m22, m23, m24,
+                     m31, m32, m33, m34, m41, m42, m43, m44)
+    {}
 
     qreal m11() const { return (*this)(0, 0); }
     qreal m12() const { return (*this)(0, 1); }

@@ -34,7 +34,10 @@
 
 #include <QtGui/qcolor.h>
 #include <QtGui/qfont.h>
+#include <QtGui/qmatrix4x4.h>
 #include <QtGui/qpa/qplatformdialoghelper.h>
+#include <QtGui/qquaternion.h>
+#include <QtGui/qvectornd.h>
 
 #if QT_CONFIG(process)
 #include <QtCore/qprocess.h>
@@ -322,6 +325,7 @@ private slots:
     void urlString();
     void valueTypeArgument();
     void valueTypeBehavior();
+    void valueTypeConstructorArguments();
     void valueTypeLists();
     void valueTypeProperty();
     void variantMapLookup();
@@ -6479,6 +6483,23 @@ void tst_QmlCppCodegen::valueTypeBehavior()
         QCOMPARE(o->property("greeting1"), QLatin1String("undefined"));
         QCOMPARE(o->property("greeting2"), QLatin1String("Custom Greeting"));
     }
+}
+
+void tst_QmlCppCodegen::valueTypeConstructorArguments()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/valueTypeConstructorArguments.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    QCOMPARE(o->property("v2").value<QVector2D>(), QVector2D(1, 2.5));
+    QCOMPARE(o->property("v3").value<QVector3D>(), QVector3D(1, 2.5, -3));
+    QCOMPARE(o->property("v4").value<QVector4D>(), QVector4D(1, 2.5, -3, 4));
+    QCOMPARE(o->property("q").value<QQuaternion>(), QQuaternion(1, 2.5, -3, 4));
+    QCOMPARE(o->property("m").value<QMatrix4x4>(),
+             QMatrix4x4(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16));
+    QCOMPARE(o->property("fromInts").value<QVector3D>(), QVector3D(5, 6, 7));
 }
 
 void tst_QmlCppCodegen::valueTypeLists()

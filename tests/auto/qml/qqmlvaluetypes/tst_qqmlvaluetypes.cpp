@@ -87,6 +87,7 @@ private slots:
     void readReferenceOnGetOwnProperty();
     void constructors();
     void constructedPrototype();
+    void constructorArguments();
 
 private:
     QQmlEngine engine;
@@ -1963,6 +1964,26 @@ void tst_qqmlvaluetypes::constructedPrototype()
 
     // An object type still has the type as prototype.
     QVERIFY(o->property("objectPrototype").toBool());
+}
+
+void tst_qqmlvaluetypes::constructorArguments()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, testFileUrl("constructorArguments.qml"));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+
+    QScopedPointer<QObject> o(c.create());
+    QVERIFY(!o.isNull());
+
+    QCOMPARE(o->property("vector2d"), QVariant(QVector2D(1, 2.5)));
+    QCOMPARE(o->property("vector3d"), QVariant(QVector3D(1, 2.5, -3)));
+    QCOMPARE(o->property("vector4d"), QVariant(QVector4D(1, 2.5, -3, 4)));
+    QCOMPARE(o->property("quaternion"), QVariant(QQuaternion(1, 2.5, -3, 4)));
+    QCOMPARE(o->property("matrix4x4"),
+             QVariant(QMatrix4x4(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16)));
+
+    QCOMPARE(o->property("fromObject"), QVariant(QVector3D(4, 5, 6)));
+    QCOMPARE(o->property("fromValue"), QVariant(QVector3D(7, 8, 9)));
 }
 
 #undef CHECK_TYPE_IS_NOT_VALUETYPE
