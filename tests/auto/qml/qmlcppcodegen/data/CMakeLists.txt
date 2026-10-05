@@ -322,6 +322,7 @@ set(qml_files
     scopedEnum.qml
     script.js
     script.mjs
+    sequencePush.qml
     sequenceToIterable.qml
     sequenceToIterable2.qml
     setLookupConversion.qml

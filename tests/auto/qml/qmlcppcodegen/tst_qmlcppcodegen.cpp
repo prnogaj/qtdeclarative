@@ -291,6 +291,7 @@ private slots:
     void scopeObjectDestruction();
     void scopeVsObject();
     void scopedEnum();
+    void sequencePush();
     void sequenceToIterable();
     void setLookupConversion();
     void setLookupOriginalScope();
@@ -4112,6 +4113,36 @@ void tst_QmlCppCodegen::forOfList()
     QVERIFY(QMetaObject::invokeMethod(
             o.get(), "sumUpTo", Q_RETURN_ARG(double, result), Q_ARG(double, 10.0)));
     QCOMPARE(result, 8.0);
+}
+
+void tst_QmlCppCodegen::sequencePush()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/sequencePush.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    int length = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "addNumber", Q_RETURN_ARG(int, length), Q_ARG(double, 2.5)));
+    QCOMPARE(length, 2);
+    QCOMPARE(o->property("numbers").value<QList<double>>(), QList<double>({ 1.5, 2.5 }));
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "addNames", Q_ARG(QString, u"a"_s), Q_ARG(QString, u"b"_s)));
+    QCOMPARE(o->property("names").toStringList(), QStringList({ u"a"_s, u"b"_s }));
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "addCount", Q_RETURN_ARG(int, length), Q_ARG(double, 3.0)));
+    QCOMPARE(length, 3);
+    QCOMPARE(o->property("counts").value<QList<int>>(), QList<int>({ 1, 2, 3 }));
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "addInLoop", Q_RETURN_ARG(int, length), Q_ARG(int, 3)));
+    QCOMPARE(length, 5);
+    QCOMPARE(o->property("numbers").value<QList<double>>(),
+             QList<double>({ 1.5, 2.5, 0, 1, 2 }));
 }
 
 void tst_QmlCppCodegen::closureArrayMethods()

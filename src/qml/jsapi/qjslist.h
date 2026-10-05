@@ -57,6 +57,13 @@ struct QJSList : private QJSListIndexClamp
         m_list->resize(size);
     }
 
+    // Returns the new size.
+    qsizetype push(const Value &value)
+    {
+        m_list->append(value);
+        return m_list->size();
+    }
+
     bool includes(const Value &value) const
     {
         return std::find(m_list->cbegin(), m_list->cend(), value) != m_list->cend();
