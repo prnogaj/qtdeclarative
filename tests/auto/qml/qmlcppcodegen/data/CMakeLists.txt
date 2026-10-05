@@ -134,6 +134,10 @@ set(qml_files
     childobject.qml
     aotLocalsGarbage.qml
     collector.qml
+    closureForEach.qml
+    closureForEachFallback.qml
+    closureForEachGc.qml
+    closureForEachThrow.qml
     colorAsVariant.qml
     colorString.qml
     compareOriginals.qml

@@ -282,6 +282,16 @@ protected:
 
     QQmlJSRegisterContent m_returnType;
 
+    // The closure loaded by the previous instructions, if it has only been moved into a register
+    // since. See QQmlJSCompilePass::ClosureSupport.
+    struct LoadedClosure
+    {
+        int functionIndex = -1;
+        int instructionOffset = -1;
+        int registerIndex = InvalidRegister;
+    };
+    LoadedClosure m_closure;
+
     // Not part of the state, as the back jumps are the reason for running multiple passes
     QMultiHash<int, ExpectedRegisterState> m_jumpOriginRegisterStateByTargetInstructionOffset;
 

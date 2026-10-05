@@ -361,6 +361,7 @@ private:
             const QString &initMethodTemplate, QString *outVar);
 
     QString castTargetName(const QQmlJSScope::ConstPtr &type) const;
+    QQmlJSScope::ConstPtr contextLocalType(int index) const;
 
     bool inlineStringMethod(const QString &name, int base, int argc, int argv);
     bool inlineTranslateMethod(const QString &name, int argc, int argv);

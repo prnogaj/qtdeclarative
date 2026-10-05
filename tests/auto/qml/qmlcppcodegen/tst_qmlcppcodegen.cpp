@@ -92,6 +92,10 @@ private slots:
     void callObjectLookupOnNull();
     void callWithSpread();
     void collectGarbageDuringAotCode();
+    void closureForEach();
+    void closureForEachFallback();
+    void closureForEachGc();
+    void closureForEachThrow();
     void collectGarbageAfterAotCodeReturned();
     void colorAsVariant();
     void colorString();
@@ -3985,6 +3989,135 @@ void tst_QmlCppCodegen::listPropertyAsModel()
 
     QQmlListReference children(o.get(), "children");
     QCOMPARE(children.count(), 5);
+}
+
+void tst_QmlCppCodegen::closureForEach()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureForEach.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    double real = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "sum", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 8.0);
+
+    int integer = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "countAbove", Q_RETURN_ARG(int, integer), Q_ARG(double, 1.0)));
+    QCOMPARE(integer, 2);
+    QCOMPARE(o->property("last").toDouble(), 6.0);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "countAbove", Q_RETURN_ARG(int, integer), Q_ARG(double, 5.0)));
+    QCOMPARE(integer, 0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "sumOfIndices", Q_RETURN_ARG(int, integer)));
+    QCOMPARE(integer, 3);
+
+    QString string;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "names", Q_RETURN_ARG(QString, string)));
+    QCOMPARE(string, u"ab"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "noArguments", Q_RETURN_ARG(int, integer)));
+    QCOMPARE(integer, 3);
+
+}
+
+void tst_QmlCppCodegen::closureForEachFallback()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureForEachFallback.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    double real = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "withArray", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 8.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "functionExpression", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 8.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "storedCallback", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 18.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "capturingCallback", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 8.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "nested", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 16.0);
+}
+
+void tst_QmlCppCodegen::closureForEachGc()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureForEachGc.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    QVERIFY(o->property("hiddenOuter").value<QObject *>());
+    QVERIFY(o->property("hiddenInner").value<QObject *>());
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "run"));
+    QCOMPARE(o->property("gcRuns").toInt(), 4);
+
+    // Objects the garbage collector has found unreachable are deleted now.
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+
+    // The garbage collector ran while the callback was running. The registers of the callback
+    // were the tracked locals of the stack frame then. Both objects have to be alive.
+    QObject *outer = o->property("keptOuter").value<QObject *>();
+    QVERIFY(outer);
+    QCOMPARE(outer->objectName(), u"dynamic"_s);
+
+    QObject *inner = o->property("keptInner").value<QObject *>();
+    QVERIFY(inner);
+    QCOMPARE(inner->objectName(), u"dynamic"_s);
+
+    // After the callback, the registers of the function are the tracked locals again.
+    engine.collectGarbage();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCOMPARE(o->property("keptOuter").value<QObject *>(), outer);
+    QCOMPARE(o->property("keptInner").value<QObject *>(), inner);
+}
+
+void tst_QmlCppCodegen::closureForEachThrow()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureForEachThrow.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    // An exception thrown in the callback ends the iteration and the function, and can be
+    // caught by the caller.
+    QQmlExpression caught(
+            qmlContext(o.get()), o.get(),
+            u"(function() { try { run() } catch (e) { return 'caught ' + e } return 'none' })()"_s);
+    QCOMPARE(caught.evaluate().toString(), u"caught ouch"_s);
+    QVERIFY2(!caught.hasError(), qPrintable(caught.error().toString()));
+    QCOMPARE(o->property("visited").toInt(), 2);
+    QCOMPARE(o->property("completed").toInt(), 1);
+    QVERIFY(!o->property("after").toBool());
+
+    // The engine is in a sane state afterwards: The same again, uncaught.
+    o->setProperty("visited", 0);
+    o->setProperty("completed", 0);
+    QQmlExpression uncaught(qmlContext(o.get()), o.get(), u"run()"_s);
+    uncaught.evaluate();
+    QVERIFY(uncaught.hasError());
+    QCOMPARE(uncaught.error().description(), u"ouch"_s);
+
+    // The error is reported for the line of the forEach() call, not for the line of the throw
+    // statement, as the stack frame is the one of the outer function.
+    QCOMPARE(uncaught.error().line(), 14);
+    QCOMPARE(o->property("visited").toInt(), 2);
+    QCOMPARE(o->property("completed").toInt(), 1);
+    QVERIFY(!o->property("after").toBool());
 }
 
 void tst_QmlCppCodegen::listPropertyPush()

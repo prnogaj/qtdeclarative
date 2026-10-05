@@ -27,6 +27,7 @@
 
 #include <QtQml/private/qqmlsignalnames_p.h>
 
+#include <functional>
 #include <limits>
 
 QT_BEGIN_NAMESPACE
@@ -856,22 +857,95 @@ std::optional<QList<QQmlJS::DiagnosticMessage>> QQmlJSAotCompiler::finalizeBindi
     return errors;
 }
 
-QQmlJSAotFunction QQmlJSAotCompiler::doCompile(
+namespace {
+struct InlinedClosures : QQmlJSCompilePass::ClosureSupport
+{
+    using Analyze = std::function<bool(
+            int, const QQmlJSCompilePass::Function *, const QList<QQmlJSRegisterContent> &)>;
+
+    bool analyzeClosure(
+            int functionIndex, const QQmlJSCompilePass::Function *outer,
+            const QList<QQmlJSRegisterContent> &argumentTypes) override
+    {
+        return analyze(functionIndex, outer, argumentTypes);
+    }
+
+    Analyze analyze;
+};
+} // namespace
+
+/*!
+ * \internal
+ * Sets up the closure with index \a functionIndex for compilation as part of \a outer, where it
+ * is called with \a argumentTypes. Returns the context of the closure, or nullptr if it cannot be
+ * inlined.
+ */
+const QV4::Compiler::Context *QQmlJSAotCompiler::initializeClosure(
+        int functionIndex, const QQmlJSCompilePass::Function *outer,
+        const QList<QQmlJSRegisterContent> &argumentTypes, QQmlJSCompilePass::Function *closure)
+{
+    const auto fail = [&](const QString &message) {
+        m_logger->logCompileError(message, QQmlJS::SourceLocation());
+        return nullptr;
+    };
+
+    const QV4::Compiler::Context *context = m_document->jsModule.functions.value(functionIndex);
+    if (!context)
+        return fail(u"Cannot find the closure to inline"_s);
+
+    // "this" and "arguments" of other functions are not those of the outer function.
+    if (!context->isArrowFunction)
+        return fail(u"Cannot inline a closure that is not an arrow function"_s);
+
+    const qsizetype formals = context->arguments.size();
+    if (formals > argumentTypes.size())
+        return fail(u"Cannot inline a closure that takes more arguments than we can type"_s);
+
+    closure->closureSupport = outer->closureSupport;
+    closure->identity = context;
+    closure->isInlinedClosure = true;
+    closure->qmlScope = outer->qmlScope;
+    closure->addressableScopes = outer->addressableScopes;
+    closure->argumentTypes = argumentTypes.first(formals);
+    closure->returnType = m_typeResolver.namedType(m_typeResolver.voidType());
+    for (int i = QQmlJSCompilePass::FirstArgument + formals;
+         i < context->registerCountInFunction; ++i) {
+        closure->registerTypes.append(m_typeResolver.namedType(m_typeResolver.voidType()));
+    }
+    closure->code = context->code;
+    closure->sourceLocations = context->sourceLocationTable.get();
+    closure->isFullyTyped = true;
+    return context;
+}
+
+/*!
+ * \internal
+ * Runs all passes on \a function and generates the code for it. If it has closures we can
+ * inline, their code is generated first, and becomes part of the code for \a function.
+ */
+QQmlJSAotFunction QQmlJSAotCompiler::compilePasses(
         const QV4::Compiler::Context *context, const QQmlJSCompilePass::Function *function)
 {
-    if (m_logger->currentFunctionHasErrorOrSkip())
-        return QQmlJSAotFunction();
+    QQmlJSCompilePass::ClosureSupport *closureSupport = function->closureSupport;
+    Q_ASSERT(closureSupport);
 
     bool basicBlocksValidationFailed = false;
     QQmlJSBasicBlocks basicBlocks(context, m_unitGenerator, &m_typeResolver, m_logger);
-    auto passResult = basicBlocks.run(function, m_flags, basicBlocksValidationFailed);
+    QQmlJSCompilePass::BlocksAndAnnotations passResult;
     auto &[blocks, annotations] = passResult;
 
-    QQmlJSTypePropagator propagator(
-            m_unitGenerator, &m_typeResolver, m_logger, blocks, annotations);
-    passResult = propagator.run(function);
-    if (m_logger->currentFunctionHasErrorOrSkip())
-        return QQmlJSAotFunction();
+    // The types of the locals in the call context depend on what the function and its closures
+    // store in them. Propagate the types until they don't change anymore. Types are only ever
+    // merged into more general ones. So this terminates.
+    do {
+        closureSupport->localTypesChanged = false;
+        passResult = basicBlocks.run(function, m_flags, basicBlocksValidationFailed);
+        QQmlJSTypePropagator propagator(
+                m_unitGenerator, &m_typeResolver, m_logger, blocks, annotations);
+        passResult = propagator.run(function);
+        if (m_logger->currentFunctionHasErrorOrSkip())
+            return QQmlJSAotFunction();
+    } while (closureSupport->localTypesChanged);
 
     QQmlJSShadowCheck shadowCheck(
             m_unitGenerator, &m_typeResolver, m_logger, blocks, annotations);
@@ -897,6 +971,48 @@ QQmlJSAotFunction QQmlJSAotCompiler::doCompile(
     if (m_logger->currentFunctionHasErrorOrSkip())
         return QQmlJSAotFunction();
 
+    // Generate the code of the closures this function calls inline. The passes above have
+    // only propagated their types. Now the types of the locals are final.
+    QList<int> closures;
+    for (auto it = closureSupport->inlinedCalls.constBegin(),
+              end = closureSupport->inlinedCalls.constEnd(); it != end; ++it) {
+        if (it.key().first == function->identity && !closures.contains(it.value()))
+            closures.append(it.value());
+    }
+    std::sort(closures.begin(), closures.end());
+
+    for (int functionIndex : std::as_const(closures)) {
+        const QList<QQmlJSRegisterContent> argumentTypes
+                = closureSupport->closures.value(functionIndex).argumentTypes;
+
+        QQmlJSCompilePass::Function closure;
+        const QV4::Compiler::Context *closureContext
+                = initializeClosure(functionIndex, function, argumentTypes, &closure);
+        if (!closureContext)
+            return QQmlJSAotFunction();
+
+        const QQmlJSAotFunction compiled = compilePasses(closureContext, &closure);
+        if (m_logger->currentFunctionHasErrorOrSkip())
+            return QQmlJSAotFunction();
+
+        if (closureSupport->localTypesChanged) {
+            m_logger->logCompileError(
+                    u"Types of the locals changed while generating code for a closure"_s,
+                    QQmlJS::SourceLocation());
+            return QQmlJSAotFunction();
+        }
+
+        QQmlJSCompilePass::ClosureSupport::Closure &result
+                = closureSupport->closures[functionIndex];
+        result.code = compiled.code;
+        result.includes = compiled.includes;
+        result.argumentStorage.clear();
+        for (QQmlJSRegisterContent argument : std::as_const(closure.argumentTypes)) {
+            result.argumentStorage.append(
+                    m_typeResolver.original(argument.storage()).containedType());
+        }
+    }
+
     QQmlJSCodeGenerator codegen(context, m_unitGenerator, &m_typeResolver, m_logger, blocks,
                                 annotations, noAotValidation());
     QQmlJSAotFunction result = codegen.run(function, basicBlocksValidationFailed);
@@ -905,6 +1021,40 @@ QQmlJSAotFunction QQmlJSAotCompiler::doCompile(
 
     m_lookupSignatures.insert(codegen.lookupSignatures());
     return result;
+}
+
+QQmlJSAotFunction QQmlJSAotCompiler::doCompile(
+        const QV4::Compiler::Context *context, const QQmlJSCompilePass::Function *function)
+{
+    if (m_logger->currentFunctionHasErrorOrSkip())
+        return QQmlJSAotFunction();
+
+    InlinedClosures closureSupport;
+    closureSupport.analyze = [this, &closureSupport](
+                                     int functionIndex, const QQmlJSCompilePass::Function *outer,
+                                     const QList<QQmlJSRegisterContent> &argumentTypes) {
+        QQmlJSCompilePass::Function closure;
+        const QV4::Compiler::Context *closureContext
+                = initializeClosure(functionIndex, outer, argumentTypes, &closure);
+        if (!closureContext)
+            return false;
+
+        closureSupport.closures[functionIndex].argumentTypes = closure.argumentTypes;
+
+        bool basicBlocksValidationFailed = false;
+        QQmlJSBasicBlocks basicBlocks(closureContext, m_unitGenerator, &m_typeResolver, m_logger);
+        auto passResult = basicBlocks.run(&closure, m_flags, basicBlocksValidationFailed);
+        QQmlJSTypePropagator propagator(
+                m_unitGenerator, &m_typeResolver, m_logger, passResult.basicBlocks,
+                passResult.annotations);
+        propagator.run(&closure);
+        return !m_logger->currentFunctionHasErrorOrSkip();
+    };
+
+    QQmlJSCompilePass::Function withClosures = *function;
+    withClosures.closureSupport = &closureSupport;
+    withClosures.identity = context;
+    return compilePasses(context, &withClosures);
 }
 
 QQmlJSAotFunction QQmlJSAotCompiler::doCompileAndRecordAotStats(
