@@ -130,6 +130,16 @@ void QQmlJSShadowCheck::generate_CallPropertyLookup(int nameIndex, int base, int
 {
     Q_UNUSED(argc);
     Q_UNUSED(argv);
+
+    // Experiment: A call the type propagator has typed as call of a JavaScript function, such
+    // as then() on a future, does not depend on what the base is. It looks up the function at
+    // run time. So it is as good for a base that turned into var because it can be shadowed.
+    const InstructionAnnotation &annotation = m_annotations[currentInstructionOffset()];
+    if (annotation.changedRegister.isValid()
+            && annotation.changedRegister.isJavaScriptReturnValue()) {
+        return;
+    }
+
     checkShadowing(m_state.registers[base].content, m_jsUnitGenerator->lookupName(nameIndex), base);
 }
 

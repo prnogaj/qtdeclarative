@@ -301,6 +301,16 @@ protected:
     };
     LoadedClosure m_closure;
 
+    // The closure loaded before that one, if both have only been moved into registers since:
+    // the first of two callbacks passed to the same call.
+    LoadedClosure m_previousClosure;
+
+    // The register that holds the promise returned by then() or catch() of a QFuture, if it
+    // has only been moved there since. Callbacks passed to its then() and catch() are only
+    // called by the promise, too.
+    int m_promiseRegister = InvalidRegister;
+    bool m_promiseCreated = false;
+
     // Not part of the state, as the back jumps are the reason for running multiple passes
     QMultiHash<int, ExpectedRegisterState> m_jumpOriginRegisterStateByTargetInstructionOffset;
 

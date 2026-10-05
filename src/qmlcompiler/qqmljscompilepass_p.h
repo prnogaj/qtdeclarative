@@ -172,9 +172,14 @@ public:
         // compiled as functions of their own.
         QHash<int, QQmlJSScope::ConstPtr> escapingClosures;
 
-        // If any closure escapes, the captured variables have to live where a function object
-        // can find them: in JavaScript contexts, not in C++ variables.
-        bool realContexts = false;
+        // What we know about the arguments of closures that escape from where they are
+        // passed to, by function index. Used for parameters without type annotation.
+        QHash<int, QList<QQmlJSScope::ConstPtr>> contextualArgumentTypes;
+
+        // The contexts a closure that escapes is created in. Their locals have to live where a
+        // function object can find them: in JavaScript contexts, not in C++ variables. The
+        // other contexts, those that only inlined closures see, do not exist at run time.
+        QSet<const void *> realContexts;
     };
 
     struct Function

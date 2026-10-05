@@ -317,7 +317,7 @@ QT_WARNING_POP
     const bool isInlinedClosure = function->isInlinedClosure;
 
     // The locals of the function's own context that hold objects. See isContextLocalTracked().
-    const QList<int> contextLocals = usesRealContexts() ? QList<int>() : ownContextLocals();
+    const QList<int> contextLocals = isRealContext(0) ? QList<int>() : ownContextLocals();
     for (int local : contextLocals) {
         const QQmlJSScope::ConstPtr type = contextLocalType(0, local);
         if (!isContextLocalTracked(type))
@@ -718,11 +718,23 @@ void QQmlJSCodeGenerator::generate_LoadImport(int index)
     BYTECODE_UNIMPLEMENTED();
 }
 
-// If a closure of the function escapes, the captured variables live in JavaScript contexts.
-// Otherwise they are C++ variables.
-bool QQmlJSCodeGenerator::usesRealContexts() const
+// If a closure that escapes is created in a context, its locals live in a JavaScript context
+// at run time. Otherwise they are C++ variables, and there is no such context at run time.
+bool QQmlJSCodeGenerator::isRealContext(int scope) const
 {
-    return m_function->closureSupport && m_function->closureSupport->realContexts;
+    return m_function->closureSupport && scope < m_function->contextChain.size()
+            && m_function->closureSupport->realContexts.contains(m_function->contextChain[scope]);
+}
+
+// The number of contexts to go outwards at run time to reach the given one
+int QQmlJSCodeGenerator::runtimeScope(int scope) const
+{
+    int result = 0;
+    for (int i = 0; i < scope; ++i) {
+        if (isRealContext(i))
+            ++result;
+    }
+    return result;
 }
 
 void QQmlJSCodeGenerator::generateLoadContextLocal(int scope, int index)
@@ -734,11 +746,11 @@ void QQmlJSCodeGenerator::generateLoadContextLocal(int scope, int index)
     if (m_state.accumulatorVariableOut.isEmpty())
         return;
 
-    if (usesRealContexts()) {
+    if (isRealContext(scope)) {
         m_body += u"{\n"_s;
         m_body += contextLocalDeclaration(type, u"local"_s) + u" {};\n"_s;
         m_body += u"aotContext->loadContextLocal(%1, %2, %3, &local);\n"_s
-                .arg(scope).arg(index).arg(metaType(contextLocalStorage(type)));
+                .arg(runtimeScope(scope)).arg(index).arg(metaType(contextLocalStorage(type)));
         m_body += m_state.accumulatorVariableOut + u" = "_s
                 + conversion(contextLocalContent(type), m_state.accumulatorOut(), u"local"_s)
                 + u";\n"_s;
@@ -761,11 +773,11 @@ void QQmlJSCodeGenerator::generateStoreContextLocal(int scope, int index)
     const QString value = conversion(
             m_state.accumulatorIn(), contextLocalContent(type), consumedAccumulatorVariableIn());
 
-    if (usesRealContexts()) {
+    if (isRealContext(scope)) {
         m_body += u"{\n"_s;
         m_body += contextLocalDeclaration(type, u"local"_s) + u" = "_s + value + u";\n"_s;
         m_body += u"aotContext->storeContextLocal(%1, %2, %3, &local);\n"_s
-                .arg(scope).arg(index).arg(metaType(contextLocalStorage(type)));
+                .arg(runtimeScope(scope)).arg(index).arg(metaType(contextLocalStorage(type)));
         m_body += u"}\n"_s;
         return;
     }
@@ -2914,8 +2926,49 @@ void QQmlJSCodeGenerator::generate_CallPropertyLookup(int index, int base, int a
             return;
     }
 
-    if (m_state.accumulatorOut().isJavaScriptReturnValue())
-        REJECT(u"call to untyped JavaScript function"_s);
+    if (m_state.accumulatorOut().isJavaScriptReturnValue()) {
+        // Experiment: then() and catch() of a thenable, for example a QFuture or a Promise.
+        // The type propagator has turned the object and the arguments into JavaScript values.
+        // We look up the method and call it, as the interpreter does.
+        const QQmlJSScope::ConstPtr jsValue = m_typeResolver->jsValueType();
+        bool isThenable = (name == u"then"_s || name == u"catch"_s || name == u"finally"_s)
+                && m_state.readRegister(base).isStoredIn(jsValue);
+        for (int i = 0; isThenable && i < argc; ++i)
+            isThenable = m_state.readRegister(argv + i).isStoredIn(jsValue);
+        if (!isThenable)
+            REJECT(u"call to untyped JavaScript function"_s);
+
+        m_body += u"{\n"_s;
+        m_body += u"const QJSValue object = "_s
+                + conversion(registerType(base), m_state.readRegister(base),
+                             registerVariable(base))
+                + u";\n"_s;
+        if (argc > 0) {
+            m_body += u"const QJSValue arguments[] = {\n"_s;
+            for (int i = 0; i < argc; ++i) {
+                m_body += u"    "_s
+                        + conversion(registerType(argv + i), m_state.readRegister(argv + i),
+                                     registerVariable(argv + i))
+                        + u",\n"_s;
+            }
+            m_body += u"};\n"_s;
+        }
+        generateSetInstructionPointer();
+        m_body += u"QJSValue result = aotContext->callValueMethod(object, "_s
+                + QQmlJSUtils::toLiteral(name) + u", "_s
+                + (argc > 0 ? u"arguments"_s : u"nullptr"_s) + u", "_s
+                + QString::number(argc) + u");\n"_s;
+        m_body += u"if (aotContext->engine->hasError()) {\n"_s;
+        generateReturnError();
+        m_body += u"}\n"_s;
+        if (!m_state.accumulatorVariableOut.isEmpty()) {
+            m_body += m_state.accumulatorVariableOut + u" = "_s
+                    + conversion(jsValue, m_state.accumulatorOut(), u"std::move(result)"_s)
+                    + u";\n"_s;
+        }
+        m_body += u"}\n"_s;
+        return;
+    }
 
     m_body += u"{\n"_s;
     QString outVar;
@@ -3236,14 +3289,11 @@ void QQmlJSCodeGenerator::generate_CreateCallContext()
             : firstArgument + int(m_function->argumentTypes.size());
     const QList<int> locals = ownContextLocals();
 
-    if (usesRealContexts()) {
-        if (!m_function->ownsContext)
-            return;
-
+    if (m_function->ownsContext && isRealContext(0)) {
         // A closure we inline is not called through a function object. It has no stack frame
         // to create a context for.
         if (m_function->isInlinedClosure)
-            REJECT(u"an inlined closure with a context of its own next to closures that escape"_s);
+            REJECT(u"an inlined closure that creates closures that escape"_s);
 
         m_body += u"aotContext->pushCallContext();\n"_s;
         for (int local : locals) {
