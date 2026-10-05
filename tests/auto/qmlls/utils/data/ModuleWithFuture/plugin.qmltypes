@@ -1,0 +1,25 @@
+import QtQuick.tooling 1.2
+
+Module {
+    Component {
+        file: "person.h"
+        name: "Person"
+        accessSemantics: "reference"
+        prototype: "QObject"
+        exports: ["ModuleWithFuture/Person 254.0"]
+        Property { name: "shoeSize"; type: "int"; read: "shoeSize"; index: 0 }
+    }
+    Component {
+        file: "service.h"
+        name: "Service"
+        accessSemantics: "reference"
+        prototype: "QObject"
+        exports: ["ModuleWithFuture/Service 254.0"]
+        Method { name: "fetchPersons"; type: "QFuture<QList<Person*>>" }
+        Method { name: "fetchPerson"; type: "QFuture<Person*>" }
+        Method { name: "wait"; type: "QFuture<void>" }
+    }
+    Component { isTypeOpaque: true; name: "QFuture<QList<Person*>>"; accessSemantics: "value" }
+    Component { isTypeOpaque: true; name: "QFuture<Person*>"; accessSemantics: "value" }
+    Component { isTypeOpaque: true; name: "QFuture<void>"; accessSemantics: "value" }
+}
