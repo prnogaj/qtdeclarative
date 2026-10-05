@@ -214,6 +214,7 @@ private slots:
     void listOfInvisible();
     void listOfInlineComponent();
     void listPropertyAsModel();
+    void listPropertyPush();
     void listToString();
     void lotsOfRegisters();
     void math();
@@ -3984,6 +3985,24 @@ void tst_QmlCppCodegen::listPropertyAsModel()
 
     QQmlListReference children(o.get(), "children");
     QCOMPARE(children.count(), 5);
+}
+
+void tst_QmlCppCodegen::listPropertyPush()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/listPropertyPush.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    QCOMPARE(o->property("lengthAfterOne").toInt(), 1);
+    QCOMPARE(o->property("lengthAfterThree").toInt(), 3);
+
+    QQmlListReference objects(o.get(), "objects");
+    QCOMPARE(objects.count(), 3);
+    QCOMPARE(objects.at(0), o->property("a").value<QObject *>());
+    QCOMPARE(objects.at(1), o->property("b").value<QObject *>());
+    QCOMPARE(objects.at(2), nullptr);
 }
 
 void tst_QmlCppCodegen::listToString()

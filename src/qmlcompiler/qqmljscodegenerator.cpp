@@ -2395,6 +2395,34 @@ bool QQmlJSCodeGenerator::inlineArrayMethod(const QString &name, int base, int a
         return true;
     }
 
+    if (name == u"push" && argc > 0 && baseType.isStoredIn(m_typeResolver->listPropertyType())) {
+        // Our QQmlListProperty only keeps plain QObject*. The type propagator has made sure that
+        // the arguments are of the element type.
+        m_body += u"{\n"_s;
+        m_body += u"    qsizetype length = -1;\n"_s;
+        for (int i = 0; i < argc; ++i) {
+            m_body += u"    length = "_s + qjsListMethod
+                    + convertStored(registerType(argv + i).storedType(),
+                                    m_typeResolver->qObjectType(),
+                                    consumedRegisterVariable(argv + i))
+                    + u");\n"_s;
+        }
+        m_body += u"    if (length < 0) {\n"_s;
+        generateSetInstructionPointer();
+        m_body += u"        aotContext->engine->throwError(QJSValue::TypeError, "_s
+                + u"QLatin1String(\"List doesn't define an Append function\"));\n"_s;
+        generateReturnError();
+        m_body += u"    }\n"_s;
+        if (!m_state.accumulatorVariableOut.isEmpty()) {
+            m_body += u"    "_s + m_state.accumulatorVariableOut + u" = "_s
+                    + conversion(m_typeResolver->sizeType(), m_state.accumulatorOut(),
+                                 u"length"_s)
+                    + u";\n"_s;
+        }
+        m_body += u"}\n"_s;
+        return true;
+    }
+
     if (name == u"toString" || (name == u"join" && argc < 2)) {
         QString call = qjsListMethod;
         if (argc == 1) {

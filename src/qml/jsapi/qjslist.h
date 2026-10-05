@@ -189,6 +189,16 @@ struct QJSList<QQmlListProperty<QObject>, QObject *>  : private QJSListIndexClam
         }
     }
 
+    // Returns the new size, or -1 if the list cannot be appended to.
+    qsizetype push(QObject *value)
+    {
+        if (!m_list->append || !m_list->count)
+            return -1;
+
+        m_list->append(m_list, value);
+        return m_list->count(m_list);
+    }
+
     bool includes(const QObject *value) const
     {
         if (!m_list->count || !m_list->at)
