@@ -1661,6 +1661,20 @@ static PropertyResult storeObjectAsVariant(
 
     const QMetaType variantMetaType = variant->metaType();
 
+    // A list property has no setter. Assigning a list property to it replaces its contents,
+    // as the interpreter does. Writing the QQmlListProperty itself would do nothing for a list
+    // property implemented in C++.
+    if ((propType.flags() & QMetaType::IsQmlList)
+            && (variantMetaType.flags() & QMetaType::IsQmlList)) {
+        return changeObjectProperty<true>(lookup, object, [&](const QQmlPropertyData *property) {
+            if (!QQmlPropertyPrivate::write(object, *property, *variant, {})) {
+                v4->throwError(
+                        QLatin1String("Cannot assign ") + QLatin1String(variantMetaType.name())
+                        + QLatin1String(" to ") + QLatin1String(propType.name()));
+            }
+        });
+    }
+
     if (isTypeCompatible(variantMetaType, propType))
         return storeObjectProperty<true>(lookup, object, variant->data());
 

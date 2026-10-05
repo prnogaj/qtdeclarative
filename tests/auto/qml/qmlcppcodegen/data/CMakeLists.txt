@@ -116,6 +116,7 @@ set(qml_files
     array.qml
     arrayCtor.qml
     asCast.qml
+    assignListPropertyToCppList.qml
     attachedBaseEnum.qml
     badSequence.qml
     basicBlocksWithBackJump.qml
