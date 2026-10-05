@@ -8,6 +8,7 @@
 
 #include <QtCore/qloggingcategory.h>
 #include <QtCore/qfileinfo.h>
+#include <QtCore/qscopeguard.h>
 
 #include <QtQml/private/qqmlsignalnames_p.h>
 
@@ -75,7 +76,8 @@ void QQmlJSFunctionInitializer::populateSignature(
 
     if (function->argumentTypes.isEmpty()) {
         bool alreadyWarnedAboutMissingAnnotations = false;
-        for (const QQmlJS::AST::BoundName &argument : std::as_const(arguments)) {
+        for (qsizetype i = 0, end = arguments.size(); i != end; ++i) {
+            const QQmlJS::AST::BoundName &argument = arguments[i];
             if (argument.typeAnnotation) {
                 if (const auto type = m_typeResolver->typeFromAST(argument.typeAnnotation->type)) {
                     function->argumentTypes.append(m_typeResolver->namedType(type));
@@ -85,6 +87,9 @@ void QQmlJSFunctionInitializer::populateSignature(
                     signatureError(u"Cannot resolve the argument type %1."_s
                                    .arg(argument.typeAnnotation->type->toString()));
                 }
+            } else if (const auto type = m_contextualArgumentTypes.value(i)) {
+                // Whoever calls this function passes this type. See the caller.
+                function->argumentTypes.append(m_typeResolver->namedType(type));
             } else {
                 if (!alreadyWarnedAboutMissingAnnotations) {
                     alreadyWarnedAboutMissingAnnotations = true;
@@ -254,8 +259,11 @@ QQmlJSCompilePass::Function QQmlJSFunctionInitializer::run(
 
 QQmlJSCompilePass::Function QQmlJSFunctionInitializer::run(
         const QV4::Compiler::Context *context, const QString &functionName,
-        QQmlJS::AST::Node *astNode)
+        QQmlJS::AST::Node *astNode, const QList<QQmlJSScope::ConstPtr> &contextualArgumentTypes)
 {
+    m_contextualArgumentTypes = contextualArgumentTypes;
+    const auto reset = qScopeGuard([this]() { m_contextualArgumentTypes.clear(); });
+
     Q_UNUSED(functionName);
 
     QQmlJSCompilePass::Function function;

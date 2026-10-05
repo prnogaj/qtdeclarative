@@ -18,6 +18,7 @@ set(cpp_sources
     dynamicmeta.h
     enumproblems.h
     enumProperty.h
+    futureprovider.h
     getOptionalLookup.h
     gadgetwithenum.h
     invisible.h
@@ -215,6 +216,7 @@ set(qml_files
     functionLookup.qml
     functionReturningVoid.qml
     functionTakingVar.qml
+    futureThenCompiled.qml
     getOptionalLookup.qml
     globals.qml
     idAccess.qml

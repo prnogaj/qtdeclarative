@@ -1016,10 +1016,18 @@ const QV4::Compiler::Context *QQmlJSAotCompiler::initializeEscapingClosure(
     if (!astNode || !astNode->asFunctionDefinition())
         return fail(u"Cannot find the definition of the closure to compile"_s);
 
-    // This reports parameters without type annotation as errors.
+    // A function with a name can call itself, with anything. Otherwise, if it is passed to
+    // something that calls it with known types, it does not have to declare them.
+    QList<QQmlJSScope::ConstPtr> contextualArgumentTypes;
+    if (context->isArrowFunction || astNode->asFunctionDefinition()->name.isEmpty()) {
+        contextualArgumentTypes
+                = outer->closureSupport->contextualArgumentTypes.value(functionIndex);
+    }
+
+    // This reports the remaining parameters without type annotation as errors.
     QQmlJSFunctionInitializer initializer(
             &m_typeResolver, m_currentObject->location, m_currentScope->location, m_logger);
-    *closure = initializer.run(context, context->name, astNode);
+    *closure = initializer.run(context, context->name, astNode, contextualArgumentTypes);
     if (m_logger->currentFunctionHasErrorOrSkip())
         return nullptr;
 
@@ -1060,7 +1068,9 @@ bool QQmlJSAotCompiler::analyzeEscapingClosures(const QQmlJSCompilePass::Functio
     std::sort(escaping.begin(), escaping.end());
 
     for (int functionIndex : std::as_const(escaping)) {
-        closureSupport->realContexts = true;
+        // The function object is bound to the contexts this function runs in.
+        for (const void *context : function->contextChain)
+            closureSupport->realContexts.insert(context);
 
         QQmlJSCompilePass::Function closure;
         const QV4::Compiler::Context *closureContext = initializeEscapingClosure(

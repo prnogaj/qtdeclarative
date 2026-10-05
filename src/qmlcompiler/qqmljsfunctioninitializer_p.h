@@ -39,9 +39,12 @@ public:
             QQmlJS::AST::Node *astNode, const QmlIR::Binding &irBinding);
     QQmlJSCompilePass::Function run(
             const QV4::Compiler::Context *context, const QString &functionName,
-            QQmlJS::AST::Node *astNode);
+            QQmlJS::AST::Node *astNode,
+            const QList<QQmlJSScope::ConstPtr> &contextualArgumentTypes = {});
 
 private:
+    QList<QQmlJSScope::ConstPtr> m_contextualArgumentTypes;
+
     void populateSignature(
             const QV4::Compiler::Context *context, QQmlJS::AST::FunctionExpression *ast,
             QQmlJSCompilePass::Function *function);
