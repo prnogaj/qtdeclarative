@@ -114,6 +114,12 @@ protected:
     LookupSignatures m_lookupSignatures;
 
 private:
+    const QV4::Compiler::Context *initializeClosure(
+            int functionIndex, const QQmlJSCompilePass::Function *outer,
+            const QList<QQmlJSRegisterContent> &argumentTypes,
+            QQmlJSCompilePass::Function *closure);
+    QQmlJSAotFunction compilePasses(
+            const QV4::Compiler::Context *context, const QQmlJSCompilePass::Function *function);
     QQmlJSAotFunction doCompile(
             const QV4::Compiler::Context *context, const QQmlJSCompilePass::Function *function);
     QQmlJSAotFunction doCompileAndRecordAotStats(

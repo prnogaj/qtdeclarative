@@ -313,11 +313,22 @@ QT_WARNING_POP
         }
     }
 
+    // An inlined closure also keeps the registers of the function it is part of alive.
+    const bool isInlinedClosure = function->isInlinedClosure;
+
     result.code += u"struct Storage : QQmlPrivate::AOTTrackedLocalsStorage {\n"_s;
-    result.code += u"Storage(const QQmlPrivate::AOTCompiledContext *ctxt, void **a)"_s;
-    result.code += u"   : aotContext(ctxt), argv(a) {}\n"_s;
+    if (isInlinedClosure) {
+        result.code += u"Storage(const QQmlPrivate::AOTCompiledContext *ctxt, void **a, "_s;
+        result.code += u"const QQmlPrivate::AOTTrackedLocalsStorage *o)"_s;
+        result.code += u"   : aotContext(ctxt), argv(a), outer(o) {}\n"_s;
+    } else {
+        result.code += u"Storage(const QQmlPrivate::AOTCompiledContext *ctxt, void **a)"_s;
+        result.code += u"   : aotContext(ctxt), argv(a) {}\n"_s;
+    }
     result.code += u"void markObjects(QV4::MarkStack *markStack) const final {"_s;
     result.code += u"    Q_UNUSED(markStack);\n"_s;
+    if (isInlinedClosure)
+        result.code += u"    outer->markObjects(markStack);\n"_s;
 
     markings.sort();
     for (const QString &marking : std::as_const(markings))
@@ -332,7 +343,12 @@ QT_WARNING_POP
     for (const QString &initialization : std::as_const(initializations))
         result.code += initialization;
 
-    result.code += u"};\nStorage s(aotContext, argv);\n"_s;
+    if (isInlinedClosure) {
+        result.code += u"const QQmlPrivate::AOTTrackedLocalsStorage *outer;\n"_s;
+        result.code += u"};\nStorage s(aotContext, argv, outerLocals);\n"_s;
+    } else {
+        result.code += u"};\nStorage s(aotContext, argv);\n"_s;
+    }
     result.code += u"aotContext->setLocals(&s);\n"_s;
 
     result.code += m_body;
@@ -688,14 +704,45 @@ void QQmlJSCodeGenerator::generate_LoadImport(int index)
 
 void QQmlJSCodeGenerator::generate_LoadLocal(int index)
 {
-    Q_UNUSED(index);
-    REJECT(u"LoadLocal"_s);
+    INJECT_TRACE_INFO(generate_LoadLocal);
+
+    const QQmlJSScope::ConstPtr type = contextLocalType(index);
+    if (!type)
+        REJECT(u"LoadLocal"_s);
+
+    if (m_state.accumulatorVariableOut.isEmpty())
+        return;
+
+    m_body += m_state.accumulatorVariableOut + u" = "_s
+            + conversion(type, m_state.accumulatorOut(), ClosureSupport::localName(index))
+            + u";\n"_s;
 }
 
 void QQmlJSCodeGenerator::generate_StoreLocal(int index)
 {
-    Q_UNUSED(index)
-    BYTECODE_UNIMPLEMENTED();
+    INJECT_TRACE_INFO(generate_StoreLocal);
+
+    const QQmlJSScope::ConstPtr type = contextLocalType(index);
+    if (!type)
+        REJECT(u"StoreLocal"_s);
+
+    m_body += ClosureSupport::localName(index) + u" = "_s
+            + conversion(m_state.accumulatorIn(), type, consumedAccumulatorVariableIn())
+            + u";\n"_s;
+}
+
+QQmlJSScope::ConstPtr QQmlJSCodeGenerator::contextLocalType(int index) const
+{
+    const ClosureSupport *closureSupport = m_function->closureSupport;
+    if (!closureSupport)
+        return {};
+
+    // We declare the locals with their contained type.
+    const QQmlJSScope::ConstPtr type = closureSupport->localTypes.value(index);
+    if (!type || m_typeResolver->storedType(type) != type)
+        return {};
+
+    return type;
 }
 
 void QQmlJSCodeGenerator::generate_LoadScopedLocal(int scope, int index)
@@ -733,6 +780,15 @@ void QQmlJSCodeGenerator::generate_MoveRegExp(int regExpId, int destReg)
 void QQmlJSCodeGenerator::generate_LoadClosure(int value)
 {
     Q_UNUSED(value)
+
+    // If the closure is inlined where it is called, there is nothing to load.
+    const ClosureSupport *closureSupport = m_function->closureSupport;
+    if (closureSupport && closureSupport->inlinedLoads.contains(
+                { m_function->identity, currentInstructionOffset() })) {
+        INJECT_TRACE_INFO(generate_LoadClosure);
+        return;
+    }
+
     REJECT(u"LoadClosure"_s);
 }
 
@@ -2423,6 +2479,74 @@ bool QQmlJSCodeGenerator::inlineArrayMethod(const QString &name, int base, int a
         return true;
     }
 
+    if (name == u"forEach" && argc == 1 && m_function->closureSupport) {
+        const ClosureSupport *closureSupport = m_function->closureSupport;
+        const auto call = closureSupport->inlinedCalls.constFind(
+                { m_function->identity, currentInstructionOffset() });
+        if (call == closureSupport->inlinedCalls.constEnd())
+            return false;
+
+        const ClosureSupport::Closure closure = closureSupport->closures.value(*call);
+        if (closure.code.isEmpty())
+            REJECT<bool>(u"call of a closure that could not be inlined"_s);
+
+        for (const QString &include : closure.includes)
+            addInclude(include);
+
+        const bool isListProperty = baseType.isStoredIn(m_typeResolver->listPropertyType());
+        const QString size = isListProperty
+                ? QString(baseVar + u".count(&"_s + baseVar + u')')
+                : QString(baseVar + u".size()"_s);
+        const QString element = isListProperty
+                ? QString(baseVar + u".at(&"_s + baseVar + u", i)"_s)
+                : QString(baseVar + u".at(i)"_s);
+
+        const auto declare = [&](qsizetype argument, const QQmlJSScope::ConstPtr &from,
+                                 const QString &value) {
+            const QQmlJSScope::ConstPtr to = closure.argumentStorage[argument];
+            m_body += to->internalName();
+            m_body += to->accessSemantics() == QQmlJSScope::AccessSemantics::Reference
+                    ? u" *"_s : u" "_s;
+            m_body += u"a%1 = "_s.arg(argument) + convertStored(from, to, value) + u";\n"_s;
+        };
+
+        // The closure is a function with the usual signature, so that the code for it can be
+        // generated as for any other function. It shares the context locals and the
+        // AOTCompiledContext with this function. While it runs, its registers are the tracked
+        // locals of the stack frame. They keep ours alive, too.
+        m_body += u"{\n"_s;
+        m_body += u"const QQmlPrivate::AOTTrackedLocalsStorage *outerLocals = &s;\n"_s;
+        m_body += u"const auto closure = [&](void **argv) {\n"_s;
+        m_body += u"const auto restoreLocals = qScopeGuard([&]() {\n"_s;
+        m_body += u"    aotContext->setLocals(outerLocals);\n"_s;
+        m_body += u"});\n"_s;
+        m_body += closure.code;
+        m_body += u"};\n"_s;
+
+        // As in ArrayPrototype::method_forEach(), the length is read once.
+        m_body += u"for (qsizetype i = 0, end = "_s + size + u"; i < end; ++i) {\n"_s;
+        if (isListProperty)
+            m_body += u"if (i >= "_s + size + u")\n    break;\n"_s;
+
+        QString arguments = u"nullptr"_s;
+        if (closure.argumentStorage.size() > 0) {
+            declare(0, elementType, element);
+            arguments += u", &a0"_s;
+        }
+        if (closure.argumentStorage.size() > 1) {
+            declare(1, m_typeResolver->sizeType(), u"i"_s);
+            arguments += u", &a1"_s;
+        }
+        m_body += u"void *arguments[] = { "_s + arguments + u" };\n"_s;
+        m_body += u"closure(arguments);\n"_s;
+        m_body += u"if (aotContext->engine->hasError()) {\n"_s;
+        generateReturnError();
+        m_body += u"}\n"_s;
+        m_body += u"}\n"_s;
+        m_body += u"}\n"_s;
+        return true;
+    }
+
     if (name == u"toString" || (name == u"join" && argc < 2)) {
         QString call = qjsListMethod;
         if (argc == 1) {
@@ -2794,6 +2918,21 @@ void QQmlJSCodeGenerator::generate_CreateCallContext()
     INJECT_TRACE_INFO(generate_CreateCallContext);
 
     m_body += u"{\n"_s;
+
+    // The locals of the call context that we know the types of. The closures we inline capture
+    // them by reference.
+    const ClosureSupport *closureSupport = m_function->closureSupport;
+    if (!closureSupport || m_function->isInlinedClosure)
+        return;
+
+    QList<int> locals = closureSupport->localTypes.keys();
+    std::sort(locals.begin(), locals.end());
+    for (int local : std::as_const(locals)) {
+        if (const QQmlJSScope::ConstPtr type = contextLocalType(local)) {
+            m_body += type->internalName() + u' ' + ClosureSupport::localName(local)
+                    + u" {};\n"_s;
+        }
+    }
 }
 
 void QQmlJSCodeGenerator::generate_PushCatchContext(int index, int nameIndex)

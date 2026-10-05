@@ -99,8 +99,58 @@ public:
         InstructionAnnotations annotations;
     };
 
+    struct Function;
+
+    // What the passes of a function and of the closures inlined into it share.
+    //
+    // A closure that is passed directly to a method we generate inline code for, and that does
+    // not need a context of its own, is compiled into a C++ lambda inside the function that
+    // creates it. The variables it captures are the locals of the call context of that
+    // function. Both functions access them as C++ variables.
+    struct ClosureSupport
+    {
+        struct Closure
+        {
+            // Types of the arguments the closure is called with
+            QList<QQmlJSRegisterContent> argumentTypes;
+
+            // Filled in before the code for the outer function is generated
+            QList<QQmlJSScope::ConstPtr> argumentStorage;
+            QString code;
+            QStringList includes;
+        };
+
+        virtual ~ClosureSupport() = default;
+
+        // Run the type propagation on the closure with the given index, as it would be called
+        // with the given arguments. This may change localTypes.
+        virtual bool analyzeClosure(
+                int functionIndex, const Function *outer,
+                const QList<QQmlJSRegisterContent> &argumentTypes) = 0;
+
+        static QString localName(int index) { return QStringLiteral("c_local%1").arg(index); }
+
+        // Contained types of the locals in the call context, by index
+        QHash<int, QQmlJSScope::ConstPtr> localTypes;
+        bool localTypesChanged = false;
+
+        // Closures to be inlined, by function index
+        QHash<int, Closure> closures;
+
+        // LoadClosure instructions whose result is only used for inlining:
+        // (identity of the function, instruction offset) -> function index of the closure
+        QHash<std::pair<const void *, int>, int> inlinedLoads;
+
+        // The same for the instructions that call the closure
+        QHash<std::pair<const void *, int>, int> inlinedCalls;
+    };
+
     struct Function
     {
+        ClosureSupport *closureSupport = nullptr;
+        const void *identity = nullptr;
+        bool isInlinedClosure = false;
+
         QQmlJSScopesById addressableScopes;
         QList<QQmlJSRegisterContent> argumentTypes;
         QList<QQmlJSRegisterContent> registerTypes;
