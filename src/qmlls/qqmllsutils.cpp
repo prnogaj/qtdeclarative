@@ -1494,6 +1494,180 @@ resolveSignalHandlerParameterType(const DomItem &parameterDefinition, const QStr
 
 /*!
 \internal
+Experiment: the type of the elements of \a type if it is a list, for example the type of a
+property declared as \c{list<Item>}.
+*/
+static QQmlJSScope::ConstPtr elementTypeOfList(const QQmlJSScope::ConstPtr &type)
+{
+    if (!type || type->accessSemantics() != QQmlJSScope::AccessSemantics::Sequence)
+        return {};
+    return type->elementType();
+}
+
+// The types below are derived from other expressions, which can refer to each other.
+static thread_local int s_contextualTypeDepth = 0;
+struct ContextualTypeDepthGuard
+{
+    ContextualTypeDepthGuard() { ++s_contextualTypeDepth; }
+    ~ContextualTypeDepthGuard() { --s_contextualTypeDepth; }
+    bool isTooDeep() const { return s_contextualTypeDepth > 8; }
+};
+
+/*!
+\internal
+Experiment: In
+
+\qml
+    someList.forEach((element, index) => ....)
+\endqml
+
+the parameters have no type annotations, but we know what the function is called with: an
+element of the list, and its index. The same holds for the other methods of lists that call a
+function for each element.
+
+qmlcachegen types the parameters of such callbacks this way when it compiles them. This gives the
+language server the same knowledge.
+*/
+static std::optional<ExpressionType>
+resolveCallbackParameterType(const DomItem &parameterDefinition, const QString &name)
+{
+    const std::optional<QQmlJSScope::JavaScriptIdentifier> jsIdentifier =
+            parameterDefinition.semanticScope()->ownJSIdentifier(name);
+    if (!jsIdentifier || jsIdentifier->kind != QQmlJSScope::JavaScriptIdentifier::Parameter)
+        return {};
+
+    // A declared type wins.
+    if (jsIdentifier->scope.toStrongRef())
+        return {};
+
+    const ContextualTypeDepthGuard guard;
+    if (guard.isTooDeep())
+        return {};
+
+    const DomItem functionExpression =
+            parameterDefinition.internalKind() == DomType::ScriptBlockStatement
+            ? parameterDefinition.directParent()
+            : parameterDefinition;
+    if (functionExpression.internalKind() != DomType::ScriptFunctionExpression)
+        return {};
+
+    // The function has to be the first argument of a call ...
+    DomItem call = functionExpression.directParent();
+    for (int i = 0; i < 2 && call && call.internalKind() != DomType::ScriptCallExpression; ++i)
+        call = call.directParent();
+    if (!call || call.internalKind() != DomType::ScriptCallExpression)
+        return {};
+
+    const DomItem arguments = call.field(Fields::arguments);
+    if (arguments.indexes() < 1 || arguments.index(0) != functionExpression)
+        return {};
+
+    // ... of one of these methods ...
+    const DomItem callee = call.field(Fields::callee);
+    if (!isFieldMemberExpression(callee))
+        return {};
+
+    static const QLatin1StringView methods[] = {
+        "forEach"_L1, "map"_L1, "filter"_L1, "some"_L1, "every"_L1, "find"_L1, "findIndex"_L1,
+        "findLast"_L1, "findLastIndex"_L1, "flatMap"_L1
+    };
+    const QString method = callee.field(Fields::right).field(Fields::identifier).value().toString();
+    if (std::find(std::begin(methods), std::end(methods), method) == std::end(methods))
+        return {};
+
+    // ... on a list whose element type we know.
+    const auto list = resolveExpressionType(
+            callee.field(Fields::left), ResolveActualTypeForFieldMemberExpression);
+    if (!list)
+        return {};
+    const QQmlJSScope::ConstPtr element = elementTypeOfList(list->semanticScope);
+    if (!element)
+        return {};
+
+    const DomItem parameters = functionExpression[Fields::parameters];
+    int indexOfParameter = -1;
+    for (int i = 0; i < parameters.indexes(); ++i) {
+        if (parameters[i][Fields::identifier].value().toString() == name) {
+            indexOfParameter = i;
+            break;
+        }
+    }
+
+    switch (indexOfParameter) {
+    case 0:
+        return ExpressionType{ name, element, JavaScriptIdentifier };
+    case 1: {
+        const auto qmlFile = parameterDefinition.containingFile().ownerAs<QmlFile>();
+        if (!qmlFile || !qmlFile->typeResolver())
+            return {};
+        return ExpressionType{ name, qmlFile->typeResolver()->int32Type(), JavaScriptIdentifier };
+    }
+    default:
+        return {};
+    }
+}
+
+/*!
+\internal
+Experiment: In
+
+\qml
+    const first = someList[0]
+    let name = first.objectName
+\endqml
+
+the variables have no type annotations (and cannot have any), but they have the type of what they
+are initialized with. That is not necessarily the type of what they hold later, if they are
+assigned to. It is the best guess we have.
+*/
+static std::optional<ExpressionType>
+resolveVariableTypeFromInitializer(const DomItem &variableDefinition, const QString &name)
+{
+    const std::optional<QQmlJSScope::JavaScriptIdentifier> jsIdentifier =
+            variableDefinition.semanticScope()->ownJSIdentifier(name);
+    if (!jsIdentifier || jsIdentifier->kind == QQmlJSScope::JavaScriptIdentifier::Parameter)
+        return {};
+
+    if (jsIdentifier->scope.toStrongRef())
+        return {};
+
+    const ContextualTypeDepthGuard guard;
+    if (guard.isTooDeep())
+        return {};
+
+    // Find the declaration by where the identifier is declared.
+    const QQmlJS::SourceLocation location = jsIdentifier->location;
+    const auto items = itemsFromTextLocation(
+            variableDefinition.containingFile(), location.startLine - 1,
+            location.startColumn - 1);
+    for (const ItemLocation &itemLocation : items) {
+        DomItem declaration = itemLocation.domItem;
+        for (int i = 0; i < 3 && declaration
+                        && declaration.internalKind() != DomType::ScriptVariableDeclarationEntry;
+             ++i) {
+            declaration = declaration.directParent();
+        }
+        if (!declaration || declaration.internalKind() != DomType::ScriptVariableDeclarationEntry)
+            continue;
+        if (declaration.field(Fields::identifier).value().toString() != name)
+            continue;
+
+        const DomItem initializer = declaration.field(Fields::initializer);
+        if (!initializer)
+            return {};
+
+        const auto type = resolveExpressionType(
+                initializer, ResolveActualTypeForFieldMemberExpression);
+        if (!type || !type->semanticScope)
+            return {};
+        return ExpressionType{ name, type->semanticScope, JavaScriptIdentifier };
+    }
+
+    return {};
+}
+
+/*!
+\internal
 resolve an identifier in the same order the QML engine would, that is:
 * first check for local JS variables (`let x = ...`)
 * then check for ids
@@ -1518,6 +1692,14 @@ static std::optional<ExpressionType> resolveIdentifierExpressionType(const DomIt
                     "It should be empty.");
         if (auto parameter = resolveSignalHandlerParameterType(definitionOfItem, name, options))
             return parameter;
+
+        // Experiment: types we can tell from the context of the declaration
+        if (options == ResolveActualTypeForFieldMemberExpression) {
+            if (auto parameter = resolveCallbackParameterType(definitionOfItem, name))
+                return parameter;
+            if (auto variable = resolveVariableTypeFromInitializer(definitionOfItem, name))
+                return variable;
+        }
 
         const auto scope = definitionOfItem.semanticScope();
         return ExpressionType{ name,
@@ -1786,6 +1968,17 @@ std::optional<ExpressionType> resolveExpressionType(const QQmlJS::Dom::DomItem &
         if (isFieldMemberExpression(item)) {
             return resolveExpressionType(item.field(Fields::right), options);
         }
+
+        // Experiment: an element of a list, as in someList[0]
+        if (options == ResolveActualTypeForFieldMemberExpression
+                && item.field(Fields::operation).value().toInteger()
+                           == ScriptElements::BinaryExpression::ArrayMemberAccess) {
+            const auto list = resolveExpressionType(item.field(Fields::left), options);
+            if (!list)
+                return {};
+            if (const QQmlJSScope::ConstPtr element = elementTypeOfList(list->semanticScope))
+                return ExpressionType{ {}, element, NotAnIdentifier };
+        }
         return {};
     }
     case DomType::ScriptLiteral: {
@@ -1864,6 +2057,24 @@ std::optional<ExpressionType> resolveExpressionType(const QQmlJS::Dom::DomItem &
     }
     case DomType::ScriptCallExpression: {
         const DomItem callee = item.field(Fields::callee);
+
+        // Experiment: the methods of a list that return a list of the same type, so that
+        // someList.filter(...).forEach(element => ...) knows its elements
+        if (options == ResolveActualTypeForFieldMemberExpression && isFieldMemberExpression(callee)) {
+            static const QLatin1StringView sameType[] = {
+                "filter"_L1, "slice"_L1, "reverse"_L1, "sort"_L1, "concat"_L1, "toReversed"_L1,
+                "toSorted"_L1
+            };
+            const QString method
+                    = callee.field(Fields::right).field(Fields::identifier).value().toString();
+            if (std::find(std::begin(sameType), std::end(sameType), method)
+                    != std::end(sameType)) {
+                const auto list = resolveExpressionType(callee.field(Fields::left), options);
+                if (list && elementTypeOfList(list->semanticScope))
+                    return ExpressionType{ {}, list->semanticScope, NotAnIdentifier };
+            }
+        }
+
         const auto calleeExpressionType = resolveExpressionType(callee, ResolveOwnerType);
 
         if (!calleeExpressionType || !calleeExpressionType->semanticScope
