@@ -96,6 +96,7 @@ private slots:
     void collectGarbageDuringAotCode();
     void closureArrayMethods();
     void closureCapturedObjects();
+    void closureCallValue();
     void closureEscaping();
     void closureEscapingFallback();
     void closureForEach();
@@ -4243,6 +4244,58 @@ void tst_QmlCppCodegen::closureCapturedObjects()
             o.get(), "capturedArgument", Q_RETURN_ARG(QString, string),
             Q_ARG(Person *, target)));
     QCOMPARE(string, u"targettargettarget"_s);
+}
+
+void tst_QmlCppCodegen::closureCallValue()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureCallValue.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    // Compiled code calls an interpreted function it is given ...
+    QJSValue triple = engine.evaluate(u"(function(x) { return x * 3 })"_s);
+    double result = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "apply", Q_RETURN_ARG(double, result),
+            Q_ARG(QVariant, QVariant::fromValue(triple)), Q_ARG(double, 5)));
+    QCOMPARE(result, 15.0);
+
+    // ... and a compiled one.
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "apply", Q_RETURN_ARG(double, result),
+            Q_ARG(QVariant, o->property("stored")), Q_ARG(double, 5)));
+    QCOMPARE(result, 105.0);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "callLocal", Q_RETURN_ARG(double, result), Q_ARG(double, 4)));
+    QCOMPARE(result, 10.0);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "callStored", Q_RETURN_ARG(double, result), Q_ARG(double, 1)));
+    QCOMPARE(result, 101.0);
+    QCOMPARE(o->property("log").toString(), u"ab"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumWith", Q_RETURN_ARG(double, result),
+            Q_ARG(QVariant, QVariant::fromValue(triple)), Q_ARG(int, 4)));
+    QCOMPARE(result, 18.0);
+
+    // Calling something that is no function throws, as in the interpreter.
+    QQmlExpression notCallable(
+            qmlContext(o.get()), o.get(),
+            u"(function() { try { callNothing(5) } catch (e) { return '' + e } return 'none' })()"_s);
+    QCOMPARE(notCallable.evaluate().toString(), u"TypeError: 5 is not a function"_s);
+
+    // An exception thrown by the callee passes through.
+    QJSValue thrower = engine.evaluate(u"(function() { throw 'ouch' })"_s);
+    engine.rootContext()->setContextProperty(u"thrower"_s, QVariant::fromValue(thrower));
+    QQmlExpression throwing(
+            qmlContext(o.get()), o.get(),
+            u"(function() { try { callNothing(thrower) } catch (e) { return 'caught ' + e } "
+            "return 'none' })()"_s);
+    QCOMPARE(throwing.evaluate().toString(), u"caught ouch"_s);
 }
 
 void tst_QmlCppCodegen::closureEscaping()

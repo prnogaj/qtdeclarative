@@ -2242,10 +2242,52 @@ void QQmlJSCodeGenerator::generateMoveOutVarAfterCall(const QString &outVar)
 
 void QQmlJSCodeGenerator::generate_CallValue(int name, int argc, int argv)
 {
-    Q_UNUSED(name)
-    Q_UNUSED(argc)
-    Q_UNUSED(argv)
-    BYTECODE_UNIMPLEMENTED();
+    INJECT_TRACE_INFO(generate_CallValue);
+
+    // Experiment: The type propagator has turned the function and the arguments into
+    // JavaScript values. Call the function as the interpreter does.
+    const QQmlJSScope::ConstPtr jsValue = m_typeResolver->jsValueType();
+    if (!m_state.readRegister(name).isStoredIn(jsValue))
+        REJECT(u"call of a value that is no JavaScript value"_s);
+
+    m_body += u"{\n"_s;
+    m_body += u"const QJSValue &function = "_s
+            + conversion(registerType(name), m_state.readRegister(name), registerVariable(name))
+            + u";\n"_s;
+    if (argc > 0) {
+        QString pointers;
+        QString types;
+        for (int i = 0; i < argc; ++i) {
+            const QQmlJSRegisterContent content = registerType(argv + i);
+            const QString var = registerVariable(argv + i);
+            pointers += u"    "_s + contentPointer(content, var) + u",\n"_s;
+            types += u"    "_s + contentType(content, var) + u",\n"_s;
+        }
+        m_body += u"const void *arguments[] = {\n"_s + pointers + u"};\n"_s;
+        m_body += u"const QMetaType types[] = {\n"_s + types + u"};\n"_s;
+    }
+    generateSetInstructionPointer();
+
+    // Whoever only wants a primitive value gets one, without a QJSValue in between.
+    const QQmlJSScope::ConstPtr jsPrimitive = m_typeResolver->jsPrimitiveType();
+    const bool wantsPrimitive = !m_state.accumulatorVariableOut.isEmpty()
+            && m_state.accumulatorOut().isStoredIn(jsPrimitive);
+    m_body += (wantsPrimitive
+                       ? u"QJSPrimitiveValue result = aotContext->callValueForPrimitive(function, "_s
+                       : u"QJSValue result = aotContext->callValue(function, "_s)
+            + QString::number(argc) + u", "_s
+            + (argc > 0 ? u"types, arguments"_s : u"nullptr, nullptr"_s) + u");\n"_s;
+    m_body += u"if (aotContext->engine->hasError()) {\n"_s;
+    generateReturnError();
+    m_body += u"}\n"_s;
+    if (wantsPrimitive) {
+        m_body += m_state.accumulatorVariableOut + u" = std::move(result);\n"_s;
+    } else if (!m_state.accumulatorVariableOut.isEmpty()) {
+        m_body += m_state.accumulatorVariableOut + u" = "_s
+                + conversion(jsValue, m_state.accumulatorOut(), u"std::move(result)"_s)
+                + u";\n"_s;
+    }
+    m_body += u"}\n"_s;
 }
 
 void QQmlJSCodeGenerator::generate_CallWithReceiver(int name, int thisObject, int argc, int argv)
