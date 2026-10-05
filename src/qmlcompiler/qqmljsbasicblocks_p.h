@@ -58,6 +58,7 @@ private:
     void endInstruction(QV4::Moth::Instr::Type type) override;
 
     void generate_Jump(int offset) override;
+    void generate_UnwindToLabel(int level, int offset) override;
     void generate_JumpTrue(int offset) override;
     void generate_JumpFalse(int offset) override;
     void generate_JumpNoException(int offset) override;
