@@ -117,7 +117,7 @@ private:
     const QV4::Compiler::Context *initializeClosure(
             int functionIndex, const QQmlJSCompilePass::Function *outer,
             const QList<QQmlJSRegisterContent> &argumentTypes,
-            QQmlJSCompilePass::Function *closure);
+            const QQmlJSScope::ConstPtr &returnType, QQmlJSCompilePass::Function *closure);
     QQmlJSAotFunction compilePasses(
             const QV4::Compiler::Context *context, const QQmlJSCompilePass::Function *function);
     QQmlJSAotFunction doCompile(

@@ -91,6 +91,33 @@ QQmlJSCompilePass::BlocksAndAnnotations QQmlJSTypePropagator::run(const Function
 
 void QQmlJSTypePropagator::generate_Ret()
 {
+    if (m_function->isInlinedClosure) {
+        const QQmlJSRegisterContent in = m_state.accumulatorIn();
+        if (QQmlJSScope::ConstPtr *inferred = m_function->inferredReturnType) {
+            // The caller takes whatever we return.
+            const QQmlJSScope::ConstPtr contained = in.containedType();
+            *inferred = *inferred ? m_typeResolver->merge(*inferred, contained) : contained;
+            m_state.addReadAccumulator(in);
+        } else if (m_returnType.contains(m_typeResolver->voidType())) {
+            // The caller ignores what we return.
+            m_state.addReadAccumulator(in);
+        } else if (in.contains(m_typeResolver->voidType())) {
+            // You can always return undefined.
+            m_state.addReadAccumulator(in);
+        } else if (in.contains(m_returnType.containedType())) {
+            addReadAccumulator(m_returnType);
+        } else {
+            // We don't know that the conversion in C++ does what the coercion in JavaScript does.
+            addError(u"callback returns %1 where %2 is expected"_s.arg(
+                    in.descriptiveName(), m_returnType.descriptiveName()));
+            return;
+        }
+
+        m_state.setHasInternalSideEffects();
+        m_state.skipInstructionsUntilNextJumpTarget = true;
+        return;
+    }
+
     if (m_function->isSignalHandler) {
         // Signal handlers cannot return anything.
     } else if (m_state.accumulatorIn().contains(m_typeResolver->voidType())) {
@@ -1534,27 +1561,61 @@ bool QQmlJSTypePropagator::propagateArrayMethod(
         return true;
     }
 
-    if (name == u"forEach" && argc == 1 && m_closure.registerIndex == argv
-            && m_function->closureSupport) {
-        // The callback is not stored anywhere and not called after forEach() returns. We can
+    if (argc == 1 && m_closure.registerIndex == argv && m_function->closureSupport
+            && (name == u"forEach" || name == u"some" || name == u"every"
+                || name == u"findIndex" || name == u"filter" || name == u"map")) {
+        // The callback is not stored anywhere and not called after the method returns. We can
         // compile it as part of this function. It is called with the element and the index. It
         // cannot take the array as third argument.
         ClosureSupport *closureSupport = m_function->closureSupport;
+        const int functionIndex = m_closure.functionIndex;
         const QList<QQmlJSRegisterContent> arguments = {
             m_typeResolver->namedType(elementContained),
             m_typeResolver->namedType(m_typeResolver->int32Type())
         };
 
-        if (!closureSupport->analyzeClosure(m_closure.functionIndex, m_function, arguments))
+        // forEach() ignores what the callback returns, map() takes whatever it returns, and the
+        // others want a boolean.
+        QQmlJSScope::ConstPtr callbackReturnType;
+        if (name == u"forEach")
+            callbackReturnType = m_typeResolver->voidType();
+        else if (name != u"map")
+            callbackReturnType = m_typeResolver->boolType();
+
+        if (!closureSupport->analyzeClosure(
+                    functionIndex, m_function, arguments, callbackReturnType)) {
             return false;
+        }
+
+        QQmlJSScope::ConstPtr result;
+        if (name == u"forEach") {
+            result = m_typeResolver->voidType();
+        } else if (name == u"some" || name == u"every") {
+            result = m_typeResolver->boolType();
+        } else if (name == u"findIndex") {
+            result = m_typeResolver->int32Type();
+        } else if (name == u"filter") {
+            result = baseContained->isListProperty()
+                    ? m_typeResolver->qObjectListType()
+                    : baseContained;
+        } else {
+            // A list of what the callback returns. We need a type for that.
+            const QQmlJSScope::ConstPtr mapped
+                    = closureSupport->closures.value(functionIndex).returnType;
+            if (!mapped || mapped == m_typeResolver->voidType()
+                    || m_typeResolver->storedType(mapped) != mapped || !mapped->listType()) {
+                return false;
+            }
+            result = mapped->listType();
+        }
 
         closureSupport->inlinedLoads.insert(
-                { m_function->identity, m_closure.instructionOffset }, m_closure.functionIndex);
+                { m_function->identity, m_closure.instructionOffset }, functionIndex);
         closureSupport->inlinedCalls.insert(
-                { m_function->identity, currentInstructionOffset() }, m_closure.functionIndex);
+                { m_function->identity, currentInstructionOffset() }, functionIndex);
 
         m_state.setHasExternalSideEffects();
-        setReturnType(m_typeResolver->voidType());
+        setReturnType(result);
         return true;
     }
 
@@ -1888,6 +1949,28 @@ void QQmlJSTypePropagator::generate_CreateCallContext()
         // The locals would be those of the new context then, not those of the outer function.
         addError(u"Cannot inline a closure that needs a JavaScript context of its own"_s);
         return;
+    }
+
+    // If closures capture the arguments, the new context holds copies of them as locals.
+    ClosureSupport *closureSupport = m_function->closureSupport;
+    if (closureSupport && m_function->firstArgumentLocal >= 0) {
+        for (qsizetype i = 0, end = m_function->argumentTypes.size(); i < end; ++i) {
+            const QQmlJSScope::ConstPtr type = m_function->argumentTypes[i].containedType();
+            if (!m_typeResolver->isNumeric(type) && type != m_typeResolver->boolType()
+                    && type != m_typeResolver->stringType()) {
+                // We cannot keep it in a C++ variable. Reading the local will fail.
+                continue;
+            }
+
+            QQmlJSScope::ConstPtr &local
+                    = closureSupport->localTypes[m_function->firstArgumentLocal + i];
+            const QQmlJSScope::ConstPtr merged = local ? m_typeResolver->merge(local, type) : type;
+            if (local != merged) {
+                local = merged;
+                closureSupport->localTypesChanged = true;
+            }
+            addReadRegister(FirstArgument + i, merged);
+        }
     }
 
     m_state.setHasInternalSideEffects();

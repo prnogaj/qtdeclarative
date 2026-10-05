@@ -92,6 +92,7 @@ private slots:
     void callObjectLookupOnNull();
     void callWithSpread();
     void collectGarbageDuringAotCode();
+    void closureArrayMethods();
     void closureForEach();
     void closureForEachFallback();
     void closureForEachGc();
@@ -3990,6 +3991,64 @@ void tst_QmlCppCodegen::listPropertyAsModel()
 
     QQmlListReference children(o.get(), "children");
     QCOMPARE(children.count(), 5);
+}
+
+void tst_QmlCppCodegen::closureArrayMethods()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureArrayMethods.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    const auto callBool = [&](const char *method, double argument) {
+        bool result = false;
+        [&]() {
+            QVERIFY(QMetaObject::invokeMethod(
+                    o.get(), method, Q_RETURN_ARG(bool, result), Q_ARG(double, argument)));
+        }();
+        return result;
+    };
+
+    QVERIFY(callBool("someAbove", 3));
+    QVERIFY(!callBool("someAbove", 4));
+    QVERIFY(callBool("everyAbove", 1));
+    QVERIFY(!callBool("everyAbove", 2));
+
+    QVERIFY(callBool("someCounting", 2));
+    QCOMPARE(o->property("calls").toInt(), 2);
+    QVERIFY(!callBool("someCounting", 10));
+    QCOMPARE(o->property("calls").toInt(), 3);
+
+    int index = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "indexOfFirstAbove", Q_RETURN_ARG(int, index), Q_ARG(double, 2.0)));
+    QCOMPARE(index, 1);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "indexOfFirstAbove", Q_RETURN_ARG(int, index), Q_ARG(double, 10.0)));
+    QCOMPARE(index, -1);
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "implicitUndefined", Q_RETURN_ARG(int, index)));
+    QCOMPARE(index, 1);
+
+    QList<double> reals;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "above", Q_RETURN_ARG(QList<double>, reals), Q_ARG(double, 2.0)));
+    QCOMPARE(reals, QList<double>({ 2.5, 4 }));
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "evenIndices", Q_RETURN_ARG(QList<double>, reals)));
+    QCOMPARE(reals, QList<double>({ 1.5, 4 }));
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "doubled", Q_RETURN_ARG(QList<double>, reals)));
+    QCOMPARE(reals, QList<double>({ 3, 5, 8 }));
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "scaled", Q_RETURN_ARG(QList<double>, reals), Q_ARG(double, 10.0)));
+    QCOMPARE(reals, QList<double>({ 15, 26, 42 }));
+
+    QStringList strings;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "names", Q_RETURN_ARG(QStringList, strings)));
+    QCOMPARE(strings, QStringList({ u"a"_s, u"bb"_s, u"c"_s }));
+
+    QString shortNames;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "shortNames", Q_RETURN_ARG(QString, shortNames)));
+    QCOMPARE(shortNames, u"2: a+c"_s);
 }
 
 void tst_QmlCppCodegen::closureForEach()
