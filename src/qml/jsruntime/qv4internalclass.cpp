@@ -336,7 +336,8 @@ InternalClassTransition &InternalClass::lookupOrInsertTransition(const InternalC
         it = std::lower_bound(transitions.begin(), transitions.end(), t);
     }
 
-    it = transitions.insert(it, t);
+    // Not insert(). QVarLengthArray::insert() grows the array by only as much as it needs.
+    it = transitions.emplace(it, t);
     return *it;
 }
 

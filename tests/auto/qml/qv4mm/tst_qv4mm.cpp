@@ -52,6 +52,7 @@ private slots:
     void accessParentOnDestruction();
     void cleanInternalClasses();
     void dropDeadTransitions();
+    void growTransitionsGeometrically();
     void createObjectsOnDestruction();
     void sharedInternalClassDataMarking();
     void gcTriggeredInOnDestroyed();
@@ -551,6 +552,40 @@ void tst_qv4mm::dropDeadTransitions()
 
     // A transition we've dropped can be created again.
     usePrototype(0);
+}
+
+void tst_qv4mm::growTransitionsGeometrically()
+{
+    QV4::ExecutionEngine engine;
+    QV4::Scope scope(engine.rootContext());
+    QV4::ScopedObject object(scope, engine.newObject());
+    QV4::Scoped<QV4::InternalClass> baseIC(scope, object->internalClass());
+
+    // Keep the objects alive, so that all the transitions stay in use.
+    QV4::ScopedArrayObject objects(scope, engine.newArrayObject());
+
+    const int numTransitions = 4096;
+    int numReallocations = 0;
+    qsizetype capacity = baseIC->d()->transitions.capacity();
+    for (int i = 0; i < numTransitions; ++i) {
+        QV4::Scope scope(&engine);
+        QV4::ScopedObject object(scope, engine.newObject());
+        QV4::ScopedObject prototype(scope, engine.newObject());
+        QVERIFY(object->setPrototypeOf(prototype));
+        QCOMPARE(object->internalClass()->parent, baseIC->d());
+        objects->push_back(object);
+
+        if (const qsizetype newCapacity = baseIC->d()->transitions.capacity();
+                newCapacity != capacity) {
+            capacity = newCapacity;
+            ++numReallocations;
+        }
+    }
+
+    QCOMPARE_GE(baseIC->d()->transitions.size(), numTransitions);
+
+    // We don't want to copy all the transitions each time we add one.
+    QCOMPARE_LE(numReallocations, 16);
 }
 
 void tst_qv4mm::createObjectsOnDestruction()
