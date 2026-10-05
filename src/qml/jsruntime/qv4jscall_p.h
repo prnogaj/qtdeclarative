@@ -307,7 +307,14 @@ inline ReturnedValue coerceListType(
 
     QV4::Scope scope(engine);
 
-    const ArrayObject *array = value.as<ArrayObject>();
+    // A JavaScript array, or a list of another type than the declared one, for example the
+    // QList<T *> a C++ function has returned where list<T> is declared. Lists of the declared
+    // type were passed on as they are above.
+    const Object *array = value.as<ArrayObject>();
+    if (!array)
+        array = value.as<QV4::Sequence>();
+    if (!array)
+        array = value.as<QmlListWrapper>();
     if (!array) {
         return (listValueType.flags() & QMetaType::PointerToQObject)
                    ? QmlListWrapper::create(engine, listValueType)

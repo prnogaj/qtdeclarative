@@ -119,7 +119,8 @@ Function::Function(ExecutionEngine *engine, ExecutableCompilationUnit *unit,
         ic = ic->addMember(engine->identifierTable->asPropertyKey(compilationUnit->runtimeStrings[localsIndices[i]]), Attr_NotConfigurable);
 
     const CompiledData::Parameter *formalsIndices = compiledFunction->formalsTable();
-    bool enforceJsTypes = !unit->ignoresFunctionSignature();
+    const bool respectsSignatures = !unit->ignoresFunctionSignature();
+    bool enforceJsTypes = respectsSignatures;
 
     for (quint32 i = 0; i < compiledFunction->nFormals; ++i) {
         ic = ic->addMember(engine->identifierTable->asPropertyKey(compilationUnit->runtimeStrings[formalsIndices[i].nameIndex]), Attr_NotConfigurable);
@@ -130,7 +131,10 @@ Function::Function(ExecutionEngine *engine, ExecutableCompilationUnit *unit,
 
     nFormals = compiledFunction->nFormals;
 
-    if (!enforceJsTypes)
+    // If there is compiled code for a function, the compiler has determined its signature.
+    // It may know the types of parameters without type annotation from how the function
+    // is used, for example as the callback of a QFuture.
+    if (!enforceJsTypes && !(aotFunction && respectsSignatures))
         return;
 
     if (aotFunction) {

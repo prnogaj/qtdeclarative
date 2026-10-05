@@ -22,6 +22,7 @@
 #include <data/withlength.h>
 
 #include <private/qqmlbind_p.h>
+#include <private/qqmlcomponent_p.h>
 #include <private/qqmlengine_p.h>
 #include <private/qqmlpropertycachecreator_p.h>
 #include <private/qqmlvmemetaobject_p.h>
@@ -176,6 +177,7 @@ private slots:
     void functionLookup();
     void functionReturningVoid();
     void functionTakingVar();
+    void futureThenCompiled();
     void getLookupOfScript();
     void getOptionalLookup();
     void getOptionalLookup_data();
@@ -4406,6 +4408,77 @@ void tst_QmlCppCodegen::typedArrowFunctionsFallback()
     QCOMPARE(strings, QStringList({ u"3"_s, u"5"_s, u"8"_s }));
 }
 
+void tst_QmlCppCodegen::futureThenCompiled()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/futureThenCompiled.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    // The callbacks run from the event loop, after the function that passed them to then()
+    // has returned.
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "fetchNumber", Q_ARG(int, 41)));
+    QCOMPARE(o->property("result").toInt(), -1);
+    QTRY_COMPARE(o->property("result").toInt(), 42);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "fetchPeople"));
+    QTRY_COMPARE(o->property("calls").toInt(), 1);
+    QCOMPARE(o->property("names").toString(), u"p0p1p2"_s);
+    QCOMPARE(o->property("sizes").toInt(), 123);
+
+    // Each call of the function has its own captured variable, also across a garbage
+    // collection between then() and the callback.
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "fetchPeople"));
+    engine.collectGarbage();
+    QTRY_COMPARE(o->property("calls").toInt(), 2);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "fetchCanceled"));
+    QTRY_COMPARE(o->property("outcome").toString(), u"rejected"_s);
+
+    // The same without type annotations on the callbacks
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "fetchNumberUntyped", Q_ARG(int, 41)));
+    QTRY_COMPARE(o->property("result").toInt(), 43);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "fetchPeopleUntyped"));
+    QTRY_COMPARE(o->property("sizes").toInt(), 124);
+    QCOMPARE(o->property("names").toString(), u"p0p1p2!"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "fetchCanceledUntyped"));
+    QTRY_COMPARE(o->property("outcome").toString(), u"rejected untyped"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "fetchCaughtUntyped"));
+    QTRY_COMPARE(o->property("outcome").toString(), u"caught untyped"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "fetchChained", Q_ARG(int, 21)));
+    QTRY_COMPARE(o->property("chained").toString(), u"got 42"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "fetchChainedCanceled"));
+    QTRY_COMPARE(o->property("chained").toString(), u"caught"_s);
+
+    // Those callbacks run as compiled code, with the signatures the compiler has determined.
+#ifndef QT_TEST_FORCE_INTERPRETER
+    int inferredSignatures = 0;
+    const auto unit = QQmlComponentPrivate::get(&c)->compilationUnit();
+    for (const QV4::Function *function : std::as_const(unit->runtimeFunctions)) {
+        if (function->kind != QV4::Function::AotCompiled)
+            continue;
+        const QV4::CompiledData::Parameter *formals
+                = function->compiledFunction->formalsTable();
+        for (quint32 i = 0; i < function->compiledFunction->nFormals; ++i) {
+            const QV4::CompiledData::ParameterType &type = formals[i].type;
+            if (type.typeNameIndexOrCommonType()
+                    == (type.indexIsCommonType()
+                                ? quint32(QV4::CompiledData::CommonType::Invalid) : 0)) {
+                ++inferredSignatures;
+                break;
+            }
+        }
+    }
+    QCOMPARE(inferredSignatures, 10);
+#endif
+}
+
 void tst_QmlCppCodegen::closureForEach()
 {
     QQmlEngine engine;
@@ -4587,8 +4660,13 @@ void tst_QmlCppCodegen::closureForEachThrow()
     QCOMPARE(uncaught.error().description(), u"ouch"_s);
 
     // The error is reported for the line of the forEach() call, not for the line of the throw
-    // statement, as the stack frame is the one of the outer function.
+    // statement, as the stack frame is the one of the outer function. The interpreter has a
+    // stack frame for the callback and reports the line of the throw statement.
+#ifdef QT_TEST_FORCE_INTERPRETER
+    QCOMPARE(uncaught.error().line(), 17);
+#else
     QCOMPARE(uncaught.error().line(), 14);
+#endif
     QCOMPARE(o->property("visited").toInt(), 2);
     QCOMPARE(o->property("completed").toInt(), 1);
     QVERIFY(!o->property("after").toBool());
