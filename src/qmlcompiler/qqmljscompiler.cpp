@@ -320,6 +320,13 @@ bool qCompileQmlFile(QmlIR::Document &irDocument, const QString &inputFileName,
                         qCDebug(lcAotCompiler) << "Generated code:" << func->code;
                         auto index = object->runtimeFunctionIndices[bindingOrFunction.index()];
                         aotFunctionsByIndex[index] = *func;
+
+                        // The closures the function creates as function objects
+                        const auto closures = aotCompiler->takeClosureFunctions();
+                        for (auto it = closures.constBegin(), end = closures.constEnd();
+                             it != end; ++it) {
+                            aotFunctionsByIndex[it.key()] = it.value();
+                        }
                     }
                 }
             });
@@ -936,6 +943,120 @@ const QV4::Compiler::Context *QQmlJSAotCompiler::initializeClosure(
 
 /*!
  * \internal
+ * Sets up the closure with index \a functionIndex, created by \a outer, for compilation as a
+ * function of its own. It becomes a JavaScript function object at run time and can be called by
+ * anyone, with anything. So its signature has to be declared: all parameters need type
+ * annotations. The return type is inferred if it is not declared; pass it in \a returnType
+ * once it is known. Returns the context of the closure, or nullptr if it cannot be compiled.
+ */
+const QV4::Compiler::Context *QQmlJSAotCompiler::initializeEscapingClosure(
+        int functionIndex, const QQmlJSCompilePass::Function *outer,
+        const QQmlJSScope::ConstPtr &returnType, QQmlJSCompilePass::Function *closure)
+{
+    const auto fail = [&](const QString &message) {
+        m_logger->logCompileError(message, QQmlJS::SourceLocation());
+        return nullptr;
+    };
+
+    QV4::Compiler::Context *context = m_document->jsModule.functions.value(functionIndex);
+    if (!context)
+        return fail(u"Cannot find the closure to compile"_s);
+
+    if (context->isGenerator)
+        return fail(u"Cannot compile a generator function as closure"_s);
+
+    // We don't know what "this" is when someone else calls the function object.
+    if (context->usesThis || context->innerFunctionAccessesThis
+            || context->usesArgumentsObject == QV4::Compiler::Context::UsesArgumentsObject::Used) {
+        return fail(u"Cannot compile a closure that uses \"this\" or \"arguments\""_s);
+    }
+
+    QQmlJS::AST::Node *astNode = m_document->jsModule.contextMap.key(context);
+    if (!astNode || !astNode->asFunctionDefinition())
+        return fail(u"Cannot find the definition of the closure to compile"_s);
+
+    // This reports parameters without type annotation as errors.
+    QQmlJSFunctionInitializer initializer(
+            &m_typeResolver, m_currentObject->location, m_currentScope->location, m_logger);
+    *closure = initializer.run(context, context->name, astNode);
+    if (m_logger->currentFunctionHasErrorOrSkip())
+        return nullptr;
+
+    closure->isFullyTyped = true;
+    if (!closure->returnType.isValid() && returnType)
+        closure->returnType = m_typeResolver.namedType(returnType);
+
+    closure->closureSupport = outer->closureSupport;
+    closure->identity = context;
+    closure->contextChain = outer->contextChain;
+    if (context->requiresExecutionContext) {
+        closure->contextChain.prepend(context);
+        closure->ownsContext = true;
+        if (context->argumentsCanEscape)
+            closure->firstArgumentLocal = context->locals.size();
+    }
+    return context;
+}
+
+/*!
+ * \internal
+ * Propagates the types of the closures \a function creates as function objects, and of the
+ * closures those create. This may change the types of the context locals.
+ */
+bool QQmlJSAotCompiler::analyzeEscapingClosures(const QQmlJSCompilePass::Function *function)
+{
+    QQmlJSCompilePass::ClosureSupport *closureSupport = function->closureSupport;
+
+    QList<int> escaping;
+    for (auto it = closureSupport->loadedClosures.constBegin(),
+              end = closureSupport->loadedClosures.constEnd(); it != end; ++it) {
+        if (it.key().first == function->identity
+                && !closureSupport->inlinedLoads.contains(it.key())
+                && !escaping.contains(it.value())) {
+            escaping.append(it.value());
+        }
+    }
+    std::sort(escaping.begin(), escaping.end());
+
+    for (int functionIndex : std::as_const(escaping)) {
+        closureSupport->realContexts = true;
+
+        QQmlJSCompilePass::Function closure;
+        const QV4::Compiler::Context *closureContext = initializeEscapingClosure(
+                functionIndex, function, QQmlJSScope::ConstPtr(), &closure);
+        if (!closureContext)
+            return false;
+
+        // The closure may create further closures. So, don't hold on to its entry.
+        QQmlJSScope::ConstPtr inferredReturnType
+                = closureSupport->escapingClosures.value(functionIndex);
+        const bool infersReturnType = !closure.returnType.isValid();
+        if (infersReturnType)
+            closure.inferredReturnType = &inferredReturnType;
+
+        bool basicBlocksValidationFailed = false;
+        QQmlJSBasicBlocks basicBlocks(closureContext, m_unitGenerator, &m_typeResolver, m_logger);
+        auto passResult = basicBlocks.run(&closure, m_flags, basicBlocksValidationFailed);
+        QQmlJSTypePropagator propagator(
+                m_unitGenerator, &m_typeResolver, m_logger, passResult.basicBlocks,
+                passResult.annotations);
+        propagator.run(&closure);
+        if (m_logger->currentFunctionHasErrorOrSkip())
+            return false;
+
+        closureSupport->escapingClosures[functionIndex] = infersReturnType
+                ? (inferredReturnType ? inferredReturnType : m_typeResolver.voidType())
+                : closure.returnType.containedType();
+
+        if (!analyzeEscapingClosures(&closure))
+            return false;
+    }
+
+    return true;
+}
+
+/*!
+ * \internal
  * Runs all passes on \a function and generates the code for it. If it has closures we can
  * inline, their code is generated first, and becomes part of the code for \a function.
  */
@@ -960,6 +1081,10 @@ QQmlJSAotFunction QQmlJSAotCompiler::compilePasses(
                 m_unitGenerator, &m_typeResolver, m_logger, blocks, annotations);
         passResult = propagator.run(function);
         if (m_logger->currentFunctionHasErrorOrSkip())
+            return QQmlJSAotFunction();
+
+        // The closures that are not inlined store into the locals, too.
+        if (!analyzeEscapingClosures(function))
             return QQmlJSAotFunction();
     } while (closureSupport->localTypesChanged);
 
@@ -1035,6 +1160,41 @@ QQmlJSAotFunction QQmlJSAotCompiler::compilePasses(
         result.returnStorage = closure.returnType.storedType();
     }
 
+    // Compile the closures this function creates as function objects. Each is a function of
+    // its own in the compilation unit.
+    QList<int> escaping;
+    for (auto it = closureSupport->loadedClosures.constBegin(),
+              end = closureSupport->loadedClosures.constEnd(); it != end; ++it) {
+        if (it.key().first == function->identity
+                && !closureSupport->inlinedLoads.contains(it.key())
+                && !escaping.contains(it.value())) {
+            escaping.append(it.value());
+        }
+    }
+    std::sort(escaping.begin(), escaping.end());
+
+    for (int functionIndex : std::as_const(escaping)) {
+        QQmlJSCompilePass::Function closure;
+        const QV4::Compiler::Context *closureContext = initializeEscapingClosure(
+                functionIndex, function, closureSupport->escapingClosures.value(functionIndex),
+                &closure);
+        if (!closureContext)
+            return QQmlJSAotFunction();
+
+        QQmlJSAotFunction compiled = compilePasses(closureContext, &closure);
+        if (m_logger->currentFunctionHasErrorOrSkip())
+            return QQmlJSAotFunction();
+
+        if (closureSupport->localTypesChanged) {
+            m_logger->logCompileError(
+                    u"Types of the locals changed while generating code for a closure"_s,
+                    QQmlJS::SourceLocation());
+            return QQmlJSAotFunction();
+        }
+
+        m_closureFunctions.insert(functionIndex, std::move(compiled));
+    }
+
     QQmlJSCodeGenerator codegen(context, m_unitGenerator, &m_typeResolver, m_logger, blocks,
                                 annotations, noAotValidation());
     QQmlJSAotFunction result = codegen.run(function, basicBlocksValidationFailed);
@@ -1048,6 +1208,7 @@ QQmlJSAotFunction QQmlJSAotCompiler::compilePasses(
 QQmlJSAotFunction QQmlJSAotCompiler::doCompile(
         const QV4::Compiler::Context *context, const QQmlJSCompilePass::Function *function)
 {
+    m_closureFunctions.clear();
     if (m_logger->currentFunctionHasErrorOrSkip())
         return QQmlJSAotFunction();
 
@@ -1092,7 +1253,14 @@ QQmlJSAotFunction QQmlJSAotCompiler::doCompile(
         if (context->argumentsCanEscape)
             withClosures.firstArgumentLocal = context->locals.size();
     }
-    return compilePasses(context, &withClosures);
+
+    QQmlJSAotFunction result = compilePasses(context, &withClosures);
+
+    // The code of a closure is only good together with the code of the function that creates
+    // it: they agree on the types of the captured variables.
+    if (m_logger->currentFunctionHasErrorOrSkip())
+        m_closureFunctions.clear();
+    return result;
 }
 
 QQmlJSAotFunction QQmlJSAotCompiler::doCompileAndRecordAotStats(

@@ -96,6 +96,43 @@ Heap::CallContext *ExecutionContext::newCallContext(JSTypesStackFrame *frame)
     return c;
 }
 
+/*!
+ * \internal
+ * Experiment: The call context of a function that was compiled ahead of time and that creates
+ * closures. Such a function has no JavaScript values for its arguments. It copies the arguments
+ * that are captured into the context itself, and it keeps its captured variables there, as
+ * the interpreter does.
+ */
+Heap::CallContext *ExecutionContext::newCallContext(MetaTypesStackFrame *frame)
+{
+    Function *function = frame->v4Function;
+    Heap::ExecutionContext *outer = static_cast<Heap::ExecutionContext *>(frame->context()->m());
+
+    const CompiledData::Function *compiledFunction = function->compiledFunction;
+    const uint nLocals = compiledFunction->nLocals;
+    const uint localsAndFormals = nLocals + function->nFormals;
+    const size_t requiredMemory
+            = sizeof(CallContext::Data) - sizeof(Value) + sizeof(Value) * (localsAndFormals);
+
+    ExecutionEngine *v4 = outer->internalClass->engine;
+    Heap::CallContext *c = v4->memoryManager->allocManaged<CallContext>(
+            requiredMemory, function->internalClass);
+    c->init();
+
+    c->outer.set(v4, outer);
+
+    // There is no function object: compiled code is not called through one when it is called
+    // with typed arguments. Nothing the compiled code can do asks for it.
+    c->locals.size = nLocals;
+    c->locals.alloc = localsAndFormals;
+
+    // memory allocated from the JS heap is 0 initialized, so the locals and arguments are
+    // undefined
+    Q_ASSERT(Value::undefinedValue().asReturnedValue() == 0);
+    c->nArgs = function->nFormals;
+    return c;
+}
+
 Heap::ExecutionContext *ExecutionContext::newWithContext(Heap::Object *with) const
 {
     Heap::ExecutionContext *c = engine()->memoryManager->alloc<ExecutionContext>(Heap::ExecutionContext::Type_WithContext);

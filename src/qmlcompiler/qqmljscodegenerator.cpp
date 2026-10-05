@@ -317,7 +317,7 @@ QT_WARNING_POP
     const bool isInlinedClosure = function->isInlinedClosure;
 
     // The locals of the function's own context that hold objects. See isContextLocalTracked().
-    const QList<int> contextLocals = ownContextLocals();
+    const QList<int> contextLocals = usesRealContexts() ? QList<int>() : ownContextLocals();
     for (int local : contextLocals) {
         const QQmlJSScope::ConstPtr type = contextLocalType(0, local);
         if (!isContextLocalTracked(type))
@@ -718,6 +718,13 @@ void QQmlJSCodeGenerator::generate_LoadImport(int index)
     BYTECODE_UNIMPLEMENTED();
 }
 
+// If a closure of the function escapes, the captured variables live in JavaScript contexts.
+// Otherwise they are C++ variables.
+bool QQmlJSCodeGenerator::usesRealContexts() const
+{
+    return m_function->closureSupport && m_function->closureSupport->realContexts;
+}
+
 void QQmlJSCodeGenerator::generateLoadContextLocal(int scope, int index)
 {
     const QQmlJSScope::ConstPtr type = contextLocalType(scope, index);
@@ -726,6 +733,18 @@ void QQmlJSCodeGenerator::generateLoadContextLocal(int scope, int index)
 
     if (m_state.accumulatorVariableOut.isEmpty())
         return;
+
+    if (usesRealContexts()) {
+        m_body += u"{\n"_s;
+        m_body += contextLocalDeclaration(type, u"local"_s) + u" {};\n"_s;
+        m_body += u"aotContext->loadContextLocal(%1, %2, %3, &local);\n"_s
+                .arg(scope).arg(index).arg(metaType(contextLocalStorage(type)));
+        m_body += m_state.accumulatorVariableOut + u" = "_s
+                + conversion(contextLocalContent(type), m_state.accumulatorOut(), u"local"_s)
+                + u";\n"_s;
+        m_body += u"}\n"_s;
+        return;
+    }
 
     m_body += m_state.accumulatorVariableOut + u" = "_s
             + conversion(contextLocalContent(type), m_state.accumulatorOut(),
@@ -739,10 +758,19 @@ void QQmlJSCodeGenerator::generateStoreContextLocal(int scope, int index)
     if (!type)
         REJECT(u"storing a local of an unknown JavaScript context"_s);
 
-    m_body += contextLocalName(scope, index) + u" = "_s
-            + conversion(m_state.accumulatorIn(), contextLocalContent(type),
-                         consumedAccumulatorVariableIn())
-            + u";\n"_s;
+    const QString value = conversion(
+            m_state.accumulatorIn(), contextLocalContent(type), consumedAccumulatorVariableIn());
+
+    if (usesRealContexts()) {
+        m_body += u"{\n"_s;
+        m_body += contextLocalDeclaration(type, u"local"_s) + u" = "_s + value + u";\n"_s;
+        m_body += u"aotContext->storeContextLocal(%1, %2, %3, &local);\n"_s
+                .arg(scope).arg(index).arg(metaType(contextLocalStorage(type)));
+        m_body += u"}\n"_s;
+        return;
+    }
+
+    m_body += contextLocalName(scope, index) + u" = "_s + value + u";\n"_s;
 }
 
 void QQmlJSCodeGenerator::generate_LoadLocal(int index)
@@ -865,6 +893,19 @@ void QQmlJSCodeGenerator::generate_LoadClosure(int value)
     if (closureSupport && closureSupport->inlinedLoads.contains(
                 { m_function->identity, currentInstructionOffset() })) {
         INJECT_TRACE_INFO(generate_LoadClosure);
+        return;
+    }
+
+    // Otherwise it is a function object, bound to the current context. Its code is compiled
+    // as a function of its own.
+    if (closureSupport && closureSupport->escapingClosures.contains(value)) {
+        INJECT_TRACE_INFO(generate_LoadClosure);
+        if (m_state.accumulatorVariableOut.isEmpty())
+            return;
+        m_body += m_state.accumulatorVariableOut + u" = "_s
+                + conversion(m_typeResolver->jsValueType(), m_state.accumulatorOut(),
+                             u"aotContext->createClosure(%1)"_s.arg(value))
+                + u";\n"_s;
         return;
     }
 
@@ -3194,6 +3235,36 @@ void QQmlJSCodeGenerator::generate_CreateCallContext()
             ? -1
             : firstArgument + int(m_function->argumentTypes.size());
     const QList<int> locals = ownContextLocals();
+
+    if (usesRealContexts()) {
+        if (!m_function->ownsContext)
+            return;
+
+        // A closure we inline is not called through a function object. It has no stack frame
+        // to create a context for.
+        if (m_function->isInlinedClosure)
+            REJECT(u"an inlined closure with a context of its own next to closures that escape"_s);
+
+        m_body += u"aotContext->pushCallContext();\n"_s;
+        for (int local : locals) {
+            if (local < firstArgument || local >= argumentEnd)
+                continue;
+
+            // The context holds a copy of an argument that is captured.
+            const QQmlJSScope::ConstPtr type = contextLocalType(0, local);
+            const int argument = FirstArgument + local - firstArgument;
+            m_body += u"{\n"_s;
+            m_body += contextLocalDeclaration(type, u"local"_s) + u" = "_s
+                    + conversion(registerType(argument), contextLocalContent(type),
+                                 registerVariable(argument))
+                    + u";\n"_s;
+            m_body += u"aotContext->storeContextLocal(0, %1, %2, &local);\n"_s
+                    .arg(local).arg(metaType(contextLocalStorage(type)));
+            m_body += u"}\n"_s;
+        }
+        return;
+    }
+
     for (int local : locals) {
         const QQmlJSScope::ConstPtr type = contextLocalType(0, local);
         const QString name = contextLocalName(0, local);

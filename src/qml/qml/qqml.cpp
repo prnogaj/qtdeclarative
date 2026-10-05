@@ -1197,6 +1197,53 @@ void AOTCompiledContext::setLocals(const AOTTrackedLocalsStorage *locals) const
     static_cast<QV4::MetaTypesStackFrame *>(engine->handle()->currentStackFrame)->setLocals(locals);
 }
 
+void AOTCompiledContext::pushCallContext() const
+{
+    QV4::ExecutionEngine *v4 = engine->handle();
+    Q_ASSERT(v4->currentStackFrame->isMetaTypesFrame());
+    auto *frame = static_cast<QV4::MetaTypesStackFrame *>(v4->currentStackFrame);
+
+    // The frame refers to its context through a value on the JavaScript stack. The scope of
+    // whoever called us releases that value when we have returned.
+    QV4::Value *slot = v4->jsAlloca(1);
+    slot->setM(QV4::ExecutionContext::newCallContext(frame));
+    frame->setContext(static_cast<QV4::ExecutionContext *>(slot));
+}
+
+static QV4::Heap::CallContext *callContext(QV4::ExecutionEngine *v4, int scope)
+{
+    QV4::Heap::ExecutionContext *context = v4->currentContext()->d();
+    while (scope-- > 0)
+        context = context->outer;
+    Q_ASSERT(context);
+    Q_ASSERT(context->type == QV4::Heap::ExecutionContext::Type_CallContext);
+    return static_cast<QV4::Heap::CallContext *>(context);
+}
+
+void AOTCompiledContext::loadContextLocal(
+        int scope, int index, QMetaType type, void *target) const
+{
+    QV4::ExecutionEngine *v4 = engine->handle();
+    const QV4::Heap::CallContext *context = callContext(v4, scope);
+    QV4::ExecutionEngine::metaTypeFromJS(context->locals[index], type, target);
+}
+
+void AOTCompiledContext::storeContextLocal(
+        int scope, int index, QMetaType type, const void *source) const
+{
+    QV4::ExecutionEngine *v4 = engine->handle();
+    QV4::Scope scopeForValue(v4);
+    QV4::ScopedValue value(scopeForValue, v4->metaTypeToJS(type, source));
+    QV4::Heap::CallContext *context = callContext(v4, scope);
+    context->locals.set(v4, index, value);
+}
+
+QJSValue AOTCompiledContext::createClosure(int functionIndex) const
+{
+    QV4::ExecutionEngine *v4 = engine->handle();
+    return QJSValuePrivate::fromReturnedValue(QV4::Runtime::Closure::call(v4, functionIndex));
+}
+
 void AOTCompiledContext::setReturnValueUndefined() const
 {
     if (auto *frame = engine->handle()->currentStackFrame) {
