@@ -1,0 +1,2 @@
+module ModuleWithFuture
+typeinfo plugin.qmltypes

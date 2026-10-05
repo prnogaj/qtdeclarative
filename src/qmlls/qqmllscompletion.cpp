@@ -352,6 +352,18 @@ void QQmlLSCompletion::methodCompletion(const QQmlJSScope::ConstPtr &scope,
                                         QDuplicateTracker<QString> *usedNames,
                                         BackInsertIterator it) const
 {
+    // A QFuture is a thenable in JavaScript. Its type does not tell.
+    if (scope->isOpaqueType() && scope->internalName().startsWith("QFuture<"_L1)) {
+        for (const QLatin1StringView name : { "then"_L1, "catch"_L1 }) {
+            if (usedNames && usedNames->hasSeen(name))
+                continue;
+            CompletionItem completion;
+            completion.label = QByteArray(name.data(), name.size());
+            completion.kind = CompletionItemKind::Method;
+            it = completion;
+        }
+    }
+
     // JS functions in current and base scopes
     for (const auto &[name, method] : scope->methods().asKeyValueRange()) {
         if (method.access() != QQmlJSMetaMethod::Public)
