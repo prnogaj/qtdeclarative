@@ -369,6 +369,7 @@ set(qml_files
     valueTypeConstructorArguments.qml
     valueTypeCopy.qml
     valueTypeDefault.qml
+    valueTypeFactories.qml
     valueTypeLists.qml
     valueTypeProperty.qml
     valueTypeReference.qml

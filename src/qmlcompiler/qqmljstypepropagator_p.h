@@ -212,6 +212,11 @@ protected:
     virtual void propagateCall(
             const QList<QQmlJSMetaMethod> &methods, int argc, int argv,
             QQmlJSRegisterContent scope);
+    bool propagateValueTypeFactory(
+            const QString &name, QQmlJSRegisterContent scope, int argc, int argv);
+
+    // The linter reports calls as they are written in the document.
+    virtual bool propagatesValueTypeFactories() const { return true; }
     virtual void propagateTranslationMethod_SAcheck(const QString &methodName);
     bool propagateTranslationMethod(const QList<QQmlJSMetaMethod> &methods, int argc, int argv);
     void propagateStringArgCall(QQmlJSRegisterContent base, int argv);

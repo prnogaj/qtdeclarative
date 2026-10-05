@@ -957,6 +957,12 @@ void QQmlJSTypePropagator::generate_CallProperty(int nameIndex, int base, int ar
 
     checkDeprecated(baseType, propertyName, true);
 
+    // The constructor does not need the Qt object. If we don't read it, it is not loaded.
+    if (propagatesValueTypeFactories()
+            && propagateValueTypeFactory(propertyName, member.scope(), argc, argv)) {
+        return;
+    }
+
     addReadRegister(base);
 
     if (callBase.contains(m_typeResolver->stringType())) {
@@ -1180,6 +1186,65 @@ void QQmlJSTypePropagator::addReadRegister(int index, const QQmlJSScope::ConstPt
 {
     m_state.addReadRegister(
             index, m_typeResolver->convert(m_state.registers[index].content, convertTo));
+}
+
+/*!
+ * \internal
+ * Qt.vector2d(), Qt.vector3d(), Qt.vector4d(), Qt.quaternion() and Qt.matrix4x4() are declared
+ * to return QVariant, as the Qt object lives in QtQml and the types live in QtGui. Called with
+ * numbers, they do the same as the constructor of the value type that takes those numbers. If
+ * the value type is known in this document, propagate the call as a call of that constructor.
+ * Then the result has the type of the value type.
+ */
+bool QQmlJSTypePropagator::propagateValueTypeFactory(
+        const QString &name, QQmlJSRegisterContent scope, int argc, int argv)
+{
+    static const QLatin1StringView factories[] = {
+        "vector2d"_L1, "vector3d"_L1, "vector4d"_L1, "quaternion"_L1, "matrix4x4"_L1
+    };
+    if (std::find(std::begin(factories), std::end(factories), name) == std::end(factories))
+        return false;
+
+    const QQmlJSScope::ConstPtr qtObject = scope.containedType();
+    if (!qtObject || qtObject->internalName() != u"QtObject"_s)
+        return false;
+
+    // The value type has the same name as the function that creates it.
+    const QQmlJSScope::ConstPtr valueType = m_typeResolver->typeForName(name);
+    if (!valueType || !valueType->isValueType() || !valueType->isCreatable())
+        return false;
+
+    const auto extension = valueType->extensionType();
+    const QQmlJSScope::ConstPtr constructible
+            = (extension.extensionSpecifier == QQmlJSScope::ExtensionType)
+                ? extension.scope
+                : valueType;
+
+    const QQmlJSScope::ConstPtr realType = m_typeResolver->realType();
+    QList<QQmlJSMetaMethod> constructors;
+    const auto candidates = constructible->ownMethods(constructible->internalName());
+    for (const QQmlJSMetaMethod &candidate : candidates) {
+        const auto parameters = candidate.parameters();
+        if (!candidate.isConstructor() || parameters.size() != argc)
+            continue;
+
+        if (std::all_of(parameters.begin(), parameters.end(), [&](const auto &parameter) {
+                return parameter.type() == realType;
+            })) {
+            constructors.append(candidate);
+        }
+    }
+
+    if (constructors.size() != 1)
+        return false;
+
+    for (int i = 0; i < argc; ++i) {
+        if (!m_typeResolver->isNumeric(m_state.registers[argv + i].content))
+            return false;
+    }
+
+    propagateCall(constructors, argc, argv, m_typeResolver->namedType(valueType));
+    return true;
 }
 
 void QQmlJSTypePropagator::propagateCall(

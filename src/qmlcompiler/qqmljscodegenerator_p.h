@@ -362,6 +362,7 @@ private:
 
     QString castTargetName(const QQmlJSScope::ConstPtr &type) const;
     QQmlJSScope::ConstPtr contextLocalType(int index) const;
+    void generateValueTypeConstruction(int argc, int argv);
 
     bool inlineStringMethod(const QString &name, int base, int argc, int argv);
     bool inlineTranslateMethod(const QString &name, int argc, int argv);
