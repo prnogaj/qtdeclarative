@@ -228,12 +228,14 @@ void QQmlJSTypePropagator::generate_LoadImport(int index)
     INSTR_PROLOGUE_NOT_IMPLEMENTED_POPULATES_ACC();
 }
 
-void QQmlJSTypePropagator::generate_LoadLocal(int index)
+void QQmlJSTypePropagator::loadContextLocal(int scope, int index)
 {
-    // We only know the locals of the call context of a function whose closures we inline.
-    // See QQmlJSCompilePass::ClosureSupport.
-    if (ClosureSupport *closureSupport = m_function->closureSupport) {
-        if (const QQmlJSScope::ConstPtr type = closureSupport->localTypes.value(index)) {
+    // We only know the locals of the contexts of a function whose closures we inline, and of
+    // those closures. See QQmlJSCompilePass::ClosureSupport.
+    ClosureSupport *closureSupport = m_function->closureSupport;
+    if (closureSupport && scope < m_function->contextChain.size()) {
+        const ClosureSupport::Local local { m_function->contextChain[scope], index };
+        if (const QQmlJSScope::ConstPtr type = closureSupport->localTypes.value(local)) {
             setAccumulator(m_pool->createType(
                     type, QQmlJSRegisterContent::InvalidLookupIndex,
                     QQmlJSRegisterContent::Operation));
@@ -241,52 +243,78 @@ void QQmlJSTypePropagator::generate_LoadLocal(int index)
         }
     }
 
-    addError(u"Cannot determine the type of local %1 in the JavaScript context"_s.arg(index));
+    addError(u"Cannot determine the type of local %1 in JavaScript context %2"_s
+                     .arg(index).arg(scope));
     setVarAccumulatorAndError();
+}
+
+bool QQmlJSTypePropagator::mergeContextLocal(
+        const ClosureSupport::Local &local, const QQmlJSScope::ConstPtr &type)
+{
+    ClosureSupport *closureSupport = m_function->closureSupport;
+    QQmlJSScope::ConstPtr &known = closureSupport->localTypes[local];
+    const QQmlJSScope::ConstPtr merged = known ? m_typeResolver->merge(known, type) : type;
+
+    // The locals are kept in C++ variables. We can do that for numbers, booleans and strings,
+    // for objects, which the code generator makes known to the garbage collector, and for
+    // lists of objects, which are backed by a property. A value type or a list of values would
+    // have to refer back to where it came from, and a JavaScript object or array cannot be
+    // held in a C++ variable at all.
+    if (!m_typeResolver->isNumeric(merged)
+            && merged != m_typeResolver->boolType()
+            && merged != m_typeResolver->stringType()
+            && !merged->isReferenceType()
+            && !merged->isListProperty()) {
+        if (!known)
+            closureSupport->localTypes.remove(local);
+        return false;
+    }
+
+    if (known != merged) {
+        known = merged;
+        closureSupport->localTypesChanged = true;
+    }
+    return true;
+}
+
+void QQmlJSTypePropagator::storeContextLocal(int scope, int index)
+{
+    if (!m_function->closureSupport || scope >= m_function->contextChain.size()) {
+        addError(u"Cannot store local %1 in unknown JavaScript context %2"_s
+                         .arg(index).arg(scope));
+        return;
+    }
+
+    const ClosureSupport::Local local { m_function->contextChain[scope], index };
+    const QQmlJSScope::ConstPtr in = m_state.accumulatorIn().containedType();
+    if (!mergeContextLocal(local, in)) {
+        addError(u"Cannot store a value of type %1 in a local of a JavaScript context"_s.arg(
+                in->internalName()));
+        return;
+    }
+
+    addReadAccumulator(m_function->closureSupport->localTypes.value(local));
+    m_state.setHasInternalSideEffects();
+}
+
+void QQmlJSTypePropagator::generate_LoadLocal(int index)
+{
+    loadContextLocal(0, index);
 }
 
 void QQmlJSTypePropagator::generate_StoreLocal(int index)
 {
-    ClosureSupport *closureSupport = m_function->closureSupport;
-    if (!closureSupport) {
-        INSTR_PROLOGUE_NOT_IMPLEMENTED();
-    }
-
-    const QQmlJSScope::ConstPtr in = m_state.accumulatorIn().containedType();
-    QQmlJSScope::ConstPtr &local = closureSupport->localTypes[index];
-    const QQmlJSScope::ConstPtr merged = local ? m_typeResolver->merge(local, in) : in;
-
-    // The locals are kept in plain C++ variables that are not marked by the garbage collector
-    // and that cannot refer back to where their value came from.
-    if (!m_typeResolver->isNumeric(merged)
-            && merged != m_typeResolver->boolType()
-            && merged != m_typeResolver->stringType()) {
-        addError(u"Cannot store a value of type %1 in a local of the JavaScript context"_s.arg(
-                merged->internalName()));
-        return;
-    }
-
-    if (local != merged) {
-        local = merged;
-        closureSupport->localTypesChanged = true;
-    }
-
-    addReadAccumulator(merged);
-    m_state.setHasInternalSideEffects();
+    storeContextLocal(0, index);
 }
 
 void QQmlJSTypePropagator::generate_LoadScopedLocal(int scope, int index)
 {
-    Q_UNUSED(scope)
-    Q_UNUSED(index)
-    INSTR_PROLOGUE_NOT_IMPLEMENTED_POPULATES_ACC();
+    loadContextLocal(scope, index);
 }
 
 void QQmlJSTypePropagator::generate_StoreScopedLocal(int scope, int index)
 {
-    Q_UNUSED(scope)
-    Q_UNUSED(index)
-    INSTR_PROLOGUE_NOT_IMPLEMENTED();
+    storeContextLocal(scope, index);
 }
 
 void QQmlJSTypePropagator::generate_LoadRuntimeString(int stringId)
@@ -1945,31 +1973,19 @@ void QQmlJSTypePropagator::generate_SetException()
 
 void QQmlJSTypePropagator::generate_CreateCallContext()
 {
-    if (m_function->isInlinedClosure) {
-        // The locals would be those of the new context then, not those of the outer function.
-        addError(u"Cannot inline a closure that needs a JavaScript context of its own"_s);
-        return;
-    }
-
     // If closures capture the arguments, the new context holds copies of them as locals.
-    ClosureSupport *closureSupport = m_function->closureSupport;
-    if (closureSupport && m_function->firstArgumentLocal >= 0) {
+    if (m_function->closureSupport && m_function->ownsContext
+            && m_function->firstArgumentLocal >= 0) {
         for (qsizetype i = 0, end = m_function->argumentTypes.size(); i < end; ++i) {
-            const QQmlJSScope::ConstPtr type = m_function->argumentTypes[i].containedType();
-            if (!m_typeResolver->isNumeric(type) && type != m_typeResolver->boolType()
-                    && type != m_typeResolver->stringType()) {
-                // We cannot keep it in a C++ variable. Reading the local will fail.
-                continue;
-            }
+            const ClosureSupport::Local local {
+                m_function->contextChain[0], m_function->firstArgumentLocal + int(i)
+            };
 
-            QQmlJSScope::ConstPtr &local
-                    = closureSupport->localTypes[m_function->firstArgumentLocal + i];
-            const QQmlJSScope::ConstPtr merged = local ? m_typeResolver->merge(local, type) : type;
-            if (local != merged) {
-                local = merged;
-                closureSupport->localTypesChanged = true;
+            // If we cannot keep it in a C++ variable, reading the local will fail.
+            if (mergeContextLocal(local, m_function->argumentTypes[i].containedType())) {
+                addReadRegister(
+                        FirstArgument + i, m_function->closureSupport->localTypes.value(local));
             }
-            addReadRegister(FirstArgument + i, merged);
         }
     }
 

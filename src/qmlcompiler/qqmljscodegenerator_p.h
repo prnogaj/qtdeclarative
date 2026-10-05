@@ -361,7 +361,15 @@ private:
             const QString &initMethodTemplate, QString *outVar);
 
     QString castTargetName(const QQmlJSScope::ConstPtr &type) const;
-    QQmlJSScope::ConstPtr contextLocalType(int index) const;
+    QQmlJSScope::ConstPtr contextLocalType(int scope, int index) const;
+    QString contextLocalName(int scope, int index) const;
+    QQmlJSScope::ConstPtr contextLocalStorage(const QQmlJSScope::ConstPtr &type) const;
+    QQmlJSRegisterContent contextLocalContent(const QQmlJSScope::ConstPtr &type);
+    QString contextLocalDeclaration(const QQmlJSScope::ConstPtr &type, const QString &name) const;
+    bool isContextLocalTracked(const QQmlJSScope::ConstPtr &type) const;
+    QList<int> ownContextLocals() const;
+    void generateLoadContextLocal(int scope, int index);
+    void generateStoreContextLocal(int scope, int index);
     void generateValueTypeConstruction(int argc, int argv);
     bool inlineArrayCallback(
             const QString &name, int base, const ClosureSupport::Closure &closure);

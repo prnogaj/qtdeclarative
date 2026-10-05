@@ -94,10 +94,12 @@ private slots:
     void callWithSpread();
     void collectGarbageDuringAotCode();
     void closureArrayMethods();
+    void closureCapturedObjects();
     void closureForEach();
     void closureForEachFallback();
     void closureForEachGc();
     void closureForEachThrow();
+    void closureNested();
     void collectGarbageAfterAotCodeReturned();
     void colorAsVariant();
     void colorString();
@@ -4170,6 +4172,42 @@ void tst_QmlCppCodegen::closureArrayMethods()
     QCOMPARE(shortNames, u"2: a+c"_s);
 }
 
+void tst_QmlCppCodegen::closureCapturedObjects()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureCapturedObjects.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    Person *target = o->property("target").value<Person *>();
+    QVERIFY(target);
+    target->setShoeSize(5);
+
+    int integer = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "writeThroughCaptured", Q_RETURN_ARG(int, integer)));
+    QCOMPARE(target->shoeSize(), 35);
+    QCOMPARE(integer, 38);
+
+    QString string;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "namesTimesNumbers", Q_RETURN_ARG(QString, string)));
+    QCOMPARE(string, u"aaabbb"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "lastPerson", Q_RETURN_ARG(QString, string)));
+    QCOMPARE(string, u"b"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sizesViaCapturedList", Q_RETURN_ARG(int, integer)));
+    QCOMPARE(integer, 3);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "capturedArgument", Q_RETURN_ARG(QString, string),
+            Q_ARG(Person *, target)));
+    QCOMPARE(string, u"targettargettarget"_s);
+}
+
 void tst_QmlCppCodegen::closureForEach()
 {
     QQmlEngine engine;
@@ -4216,17 +4254,56 @@ void tst_QmlCppCodegen::closureForEachFallback()
     QVERIFY(QMetaObject::invokeMethod(o.get(), "withArray", Q_RETURN_ARG(double, real)));
     QCOMPARE(real, 8.0);
 
-    QVERIFY(QMetaObject::invokeMethod(o.get(), "functionExpression", Q_RETURN_ARG(double, real)));
-    QCOMPARE(real, 8.0);
+    bool outerThis = true;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "functionWithThis", Q_RETURN_ARG(bool, outerThis)));
+    QVERIFY(!outerThis);
+
+    int count = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "functionWithArguments", Q_RETURN_ARG(int, count)));
+    QCOMPARE(count, 9);
+
+    QString names;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "capturedObject", Q_RETURN_ARG(QString, names)));
+    QCOMPARE(names, u"xxxxxx"_s);
 
     QVERIFY(QMetaObject::invokeMethod(o.get(), "storedCallback", Q_RETURN_ARG(double, real)));
     QCOMPARE(real, 18.0);
+}
 
-    QVERIFY(QMetaObject::invokeMethod(o.get(), "capturingCallback", Q_RETURN_ARG(double, real)));
+void tst_QmlCppCodegen::closureNested()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureNested.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    double real = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "products", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 88.0);
+
+    int integer = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "countPerElement", Q_RETURN_ARG(int, integer)));
+    QCOMPARE(integer, 222);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "threeLevels", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 968.0);
+
+    bool boolean = false;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "anyProductAbove", Q_RETURN_ARG(bool, boolean), Q_ARG(double, 39.0)));
+    QVERIFY(boolean);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "anyProductAbove", Q_RETURN_ARG(bool, boolean), Q_ARG(double, 40.0)));
+    QVERIFY(!boolean);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "functionExpression", Q_RETURN_ARG(double, real)));
     QCOMPARE(real, 8.0);
 
-    QVERIFY(QMetaObject::invokeMethod(o.get(), "nested", Q_RETURN_ARG(double, real)));
-    QCOMPARE(real, 16.0);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "namedFunctionExpression", Q_RETURN_ARG(double, real), Q_ARG(double, 2.0)));
+    QCOMPARE(real, 10.0);
+    QCOMPARE(o->property("calls").toInt(), 3);
 }
 
 void tst_QmlCppCodegen::closureForEachGc()
@@ -4262,6 +4339,26 @@ void tst_QmlCppCodegen::closureForEachGc()
     QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
     QCOMPARE(o->property("keptOuter").value<QObject *>(), outer);
     QCOMPARE(o->property("keptInner").value<QObject *>(), inner);
+
+    // The same for objects that only captured variables refer to: a variable of the function,
+    // and a variable of a callback that a closure inside it captures.
+    QVERIFY(o->property("hiddenCaptured").value<QObject *>());
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "runCaptured"));
+    QCOMPARE(o->property("gcRuns").toInt(), 2);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+    QObject *captured = o->property("keptCaptured").value<QObject *>();
+    QVERIFY(captured);
+    QCOMPARE(captured->objectName(), u"dynamic"_s);
+
+    QVERIFY(o->property("hiddenNested").value<QObject *>());
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "runNested"));
+    QCOMPARE(o->property("gcRuns").toInt(), 9);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+    QObject *nested = o->property("keptNested").value<QObject *>();
+    QVERIFY(nested);
+    QCOMPARE(nested->objectName(), u"dynamic"_s);
 }
 
 void tst_QmlCppCodegen::closureForEachThrow()

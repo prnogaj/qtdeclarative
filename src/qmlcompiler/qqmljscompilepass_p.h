@@ -103,10 +103,11 @@ public:
 
     // What the passes of a function and of the closures inlined into it share.
     //
-    // A closure that is passed directly to a method we generate inline code for, and that does
-    // not need a context of its own, is compiled into a C++ lambda inside the function that
-    // creates it. The variables it captures are the locals of the call context of that
-    // function. Both functions access them as C++ variables.
+    // A closure that is passed directly to a method we generate inline code for is compiled
+    // into a C++ lambda inside the function that creates it. The variables it captures are
+    // locals of the call contexts of the functions around it. They are C++ variables, declared
+    // where the context is created: in the function body, or in the lambda of a closure that
+    // needs a context of its own because its variables are captured in turn.
     struct ClosureSupport
     {
         struct Closure
@@ -136,11 +137,22 @@ public:
                 const QList<QQmlJSRegisterContent> &argumentTypes,
                 const QQmlJSScope::ConstPtr &returnType) = 0;
 
-        static QString localName(int index) { return QStringLiteral("c_local%1").arg(index); }
+        // A local of a JavaScript context: the context and the index in it
+        using Local = std::pair<const void *, int>;
 
-        // Contained types of the locals in the call context, by index
-        QHash<int, QQmlJSScope::ConstPtr> localTypes;
+        // The name of the C++ variable that holds the local
+        QString localName(const Local &local)
+        {
+            auto it = contextNumbers.find(local.first);
+            if (it == contextNumbers.end())
+                it = contextNumbers.insert(local.first, contextNumbers.size());
+            return QStringLiteral("c%1_local%2").arg(*it).arg(local.second);
+        }
+
+        // Contained types of the locals of the call contexts
+        QHash<Local, QQmlJSScope::ConstPtr> localTypes;
         bool localTypesChanged = false;
+        QHash<const void *, int> contextNumbers;
 
         // Closures to be inlined, by function index
         QHash<int, Closure> closures;
@@ -159,8 +171,14 @@ public:
         const void *identity = nullptr;
         bool isInlinedClosure = false;
 
-        // If the arguments are captured by a closure, they are locals of the call context, too,
-        // starting at this index.
+        // The JavaScript contexts the function runs in, innermost first. The first one is
+        // the function's own if ownsContext is set. Otherwise the function has none, and the
+        // list starts with the context of the function around it.
+        QList<const void *> contextChain;
+        bool ownsContext = false;
+
+        // If the arguments are captured by a closure, they are locals of the function's own
+        // context, too, starting at this index.
         int firstArgumentLocal = -1;
 
         // If set, the function has no return type yet. The type propagator merges the types of

@@ -316,6 +316,18 @@ QT_WARNING_POP
     // An inlined closure also keeps the registers of the function it is part of alive.
     const bool isInlinedClosure = function->isInlinedClosure;
 
+    // The locals of the function's own context that hold objects. See isContextLocalTracked().
+    const QList<int> contextLocals = ownContextLocals();
+    for (int local : contextLocals) {
+        const QQmlJSScope::ConstPtr type = contextLocalType(0, local);
+        if (!isContextLocalTracked(type))
+            continue;
+
+        const QString name = contextLocalName(0, local);
+        initializations.append(contextLocalDeclaration(type, name) + u" = nullptr;\n"_s);
+        markings.append(u"    aotContext->mark("_s + name + u", markStack);\n"_s);
+    }
+
     result.code += u"struct Storage : QQmlPrivate::AOTTrackedLocalsStorage {\n"_s;
     if (isInlinedClosure) {
         result.code += u"Storage(const QQmlPrivate::AOTCompiledContext *ctxt, void **a, "_s;
@@ -706,61 +718,124 @@ void QQmlJSCodeGenerator::generate_LoadImport(int index)
     BYTECODE_UNIMPLEMENTED();
 }
 
-void QQmlJSCodeGenerator::generate_LoadLocal(int index)
+void QQmlJSCodeGenerator::generateLoadContextLocal(int scope, int index)
 {
-    INJECT_TRACE_INFO(generate_LoadLocal);
-
-    const QQmlJSScope::ConstPtr type = contextLocalType(index);
+    const QQmlJSScope::ConstPtr type = contextLocalType(scope, index);
     if (!type)
-        REJECT(u"LoadLocal"_s);
+        REJECT(u"loading a local of an unknown JavaScript context"_s);
 
     if (m_state.accumulatorVariableOut.isEmpty())
         return;
 
     m_body += m_state.accumulatorVariableOut + u" = "_s
-            + conversion(type, m_state.accumulatorOut(), ClosureSupport::localName(index))
+            + conversion(contextLocalContent(type), m_state.accumulatorOut(),
+                         contextLocalName(scope, index))
             + u";\n"_s;
+}
+
+void QQmlJSCodeGenerator::generateStoreContextLocal(int scope, int index)
+{
+    const QQmlJSScope::ConstPtr type = contextLocalType(scope, index);
+    if (!type)
+        REJECT(u"storing a local of an unknown JavaScript context"_s);
+
+    m_body += contextLocalName(scope, index) + u" = "_s
+            + conversion(m_state.accumulatorIn(), contextLocalContent(type),
+                         consumedAccumulatorVariableIn())
+            + u";\n"_s;
+}
+
+void QQmlJSCodeGenerator::generate_LoadLocal(int index)
+{
+    INJECT_TRACE_INFO(generate_LoadLocal);
+    generateLoadContextLocal(0, index);
 }
 
 void QQmlJSCodeGenerator::generate_StoreLocal(int index)
 {
     INJECT_TRACE_INFO(generate_StoreLocal);
-
-    const QQmlJSScope::ConstPtr type = contextLocalType(index);
-    if (!type)
-        REJECT(u"StoreLocal"_s);
-
-    m_body += ClosureSupport::localName(index) + u" = "_s
-            + conversion(m_state.accumulatorIn(), type, consumedAccumulatorVariableIn())
-            + u";\n"_s;
-}
-
-QQmlJSScope::ConstPtr QQmlJSCodeGenerator::contextLocalType(int index) const
-{
-    const ClosureSupport *closureSupport = m_function->closureSupport;
-    if (!closureSupport)
-        return {};
-
-    // We declare the locals with their contained type.
-    const QQmlJSScope::ConstPtr type = closureSupport->localTypes.value(index);
-    if (!type || m_typeResolver->storedType(type) != type)
-        return {};
-
-    return type;
+    generateStoreContextLocal(0, index);
 }
 
 void QQmlJSCodeGenerator::generate_LoadScopedLocal(int scope, int index)
 {
-    Q_UNUSED(scope)
-    Q_UNUSED(index)
-    BYTECODE_UNIMPLEMENTED();
+    INJECT_TRACE_INFO(generate_LoadScopedLocal);
+    generateLoadContextLocal(scope, index);
 }
 
 void QQmlJSCodeGenerator::generate_StoreScopedLocal(int scope, int index)
 {
-    Q_UNUSED(scope)
-    Q_UNUSED(index)
-    BYTECODE_UNIMPLEMENTED();
+    INJECT_TRACE_INFO(generate_StoreScopedLocal);
+    generateStoreContextLocal(scope, index);
+}
+
+QQmlJSScope::ConstPtr QQmlJSCodeGenerator::contextLocalType(int scope, int index) const
+{
+    const ClosureSupport *closureSupport = m_function->closureSupport;
+    if (!closureSupport || scope >= m_function->contextChain.size())
+        return {};
+
+    return closureSupport->localTypes.value({ m_function->contextChain[scope], index });
+}
+
+// The type of the C++ variable that holds a local of the given type. Generated code only
+// knows objects as QObject.
+QQmlJSScope::ConstPtr QQmlJSCodeGenerator::contextLocalStorage(
+        const QQmlJSScope::ConstPtr &type) const
+{
+    return type->isReferenceType()
+            ? m_typeResolver->qObjectType()
+            : m_typeResolver->storedType(type);
+}
+
+// How a local of the given type is held in its C++ variable
+QQmlJSRegisterContent QQmlJSCodeGenerator::contextLocalContent(const QQmlJSScope::ConstPtr &type)
+{
+    return m_pool->storedIn(
+            m_pool->createType(
+                    type, QQmlJSRegisterContent::InvalidLookupIndex,
+                    QQmlJSRegisterContent::Operation),
+            contextLocalStorage(type));
+}
+
+QString QQmlJSCodeGenerator::contextLocalDeclaration(
+        const QQmlJSScope::ConstPtr &type, const QString &name) const
+{
+    const QQmlJSScope::ConstPtr stored = contextLocalStorage(type);
+    return stored->internalName()
+            + (stored->accessSemantics() == QQmlJSScope::AccessSemantics::Reference
+                       ? u" *"_s : u" "_s)
+            + name;
+}
+
+// Locals that hold objects are members of the tracked locals, so that the garbage collector
+// finds them. The others are plain variables.
+bool QQmlJSCodeGenerator::isContextLocalTracked(const QQmlJSScope::ConstPtr &type) const
+{
+    return contextLocalStorage(type)->accessSemantics()
+            == QQmlJSScope::AccessSemantics::Reference;
+}
+
+// The locals of the function's own context, sorted by index
+QList<int> QQmlJSCodeGenerator::ownContextLocals() const
+{
+    QList<int> locals;
+    const ClosureSupport *closureSupport = m_function->closureSupport;
+    if (!closureSupport || !m_function->ownsContext)
+        return locals;
+
+    for (auto it = closureSupport->localTypes.constBegin(),
+              end = closureSupport->localTypes.constEnd(); it != end; ++it) {
+        if (it.key().first == m_function->contextChain[0] && it.value())
+            locals.append(it.key().second);
+    }
+    std::sort(locals.begin(), locals.end());
+    return locals;
+}
+
+QString QQmlJSCodeGenerator::contextLocalName(int scope, int index) const
+{
+    return m_function->closureSupport->localName({ m_function->contextChain[scope], index });
 }
 
 void QQmlJSCodeGenerator::generate_LoadRuntimeString(int stringId)
@@ -3081,32 +3156,36 @@ void QQmlJSCodeGenerator::generate_CreateCallContext()
 
     m_body += u"{\n"_s;
 
-    // The locals of the call context that we know the types of. The closures we inline capture
-    // them by reference.
-    const ClosureSupport *closureSupport = m_function->closureSupport;
-    if (!closureSupport || m_function->isInlinedClosure)
-        return;
-
-    QList<int> locals = closureSupport->localTypes.keys();
-    std::sort(locals.begin(), locals.end());
+    // The locals of the new context that we know the types of. The closures we inline capture
+    // them by reference. If this is the context of an inlined closure, we are in the body of
+    // its lambda, and the locals are new for each call, as the context is.
     const int firstArgument = m_function->firstArgumentLocal;
     const int argumentEnd = firstArgument < 0
             ? -1
             : firstArgument + int(m_function->argumentTypes.size());
-    for (int local : std::as_const(locals)) {
-        const QQmlJSScope::ConstPtr type = contextLocalType(local);
-        if (!type)
-            continue;
+    const QList<int> locals = ownContextLocals();
+    for (int local : locals) {
+        const QQmlJSScope::ConstPtr type = contextLocalType(0, local);
+        const QString name = contextLocalName(0, local);
 
-        m_body += type->internalName() + u' ' + ClosureSupport::localName(local);
+        // The context holds a copy of an argument that is captured.
+        QString initialValue;
         if (local >= firstArgument && local < argumentEnd) {
-            // The context holds a copy of the argument.
             const int argument = FirstArgument + local - firstArgument;
-            m_body += u" = "_s
-                    + conversion(registerType(argument), type, registerVariable(argument))
-                    + u";\n"_s;
+            initialValue = conversion(
+                    registerType(argument), contextLocalContent(type),
+                    registerVariable(argument));
+        }
+
+        if (isContextLocalTracked(type)) {
+            // A member of the tracked locals, under a name that the closures can use, too.
+            m_body += u"auto &"_s + name + u" = s."_s + name + u";\n"_s;
+            if (!initialValue.isEmpty())
+                m_body += name + u" = "_s + initialValue + u";\n"_s;
+        } else if (initialValue.isEmpty()) {
+            m_body += contextLocalDeclaration(type, name) + u" {};\n"_s;
         } else {
-            m_body += u" {};\n"_s;
+            m_body += contextLocalDeclaration(type, name) + u" = "_s + initialValue + u";\n"_s;
         }
     }
 }
