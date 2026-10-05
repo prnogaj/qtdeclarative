@@ -210,8 +210,6 @@ void QQmlJSTypePropagator::generate_StoreReg(int reg)
 
     if (m_closure.registerIndex == Accumulator)
         m_closure.registerIndex = reg;
-    if (m_promiseRegister == Accumulator)
-        m_promiseRegister = reg;
 }
 
 void QQmlJSTypePropagator::generate_MoveReg(int srcReg, int destReg)
@@ -250,8 +248,58 @@ void QQmlJSTypePropagator::loadContextLocal(int scope, int index)
     setVarAccumulatorAndError();
 }
 
+/*!
+ * \internal
+ * Returns whether \a content is a value type or a list of values that nothing outside of this
+ * function refers to: one that was created here, or a part of such a value. What is read from
+ * a property is a reference to that property in JavaScript, and stays one when a closure
+ * keeps it.
+ */
+bool QQmlJSTypePropagator::isDetachedValue(QQmlJSRegisterContent content) const
+{
+    for (int depth = 0; depth < 16 && content.isValid(); ++depth) {
+        switch (content.containedType()->accessSemantics()) {
+        case QQmlJSScope::AccessSemantics::Value:
+        case QQmlJSScope::AccessSemantics::Sequence:
+            break;
+        default:
+            return false;
+        }
+
+        switch (content.variant()) {
+        case QQmlJSRegisterContent::MethodCall: {
+            // Methods implemented in C++ return copies, and so do the methods of arrays
+            // that create a new array.
+            const QQmlJSMetaMethod method = content.methodCall();
+            if (!method.isJavaScriptFunction())
+                return true;
+            static const QLatin1StringView copying[] = {
+                "concat"_L1, "filter"_L1, "map"_L1, "slice"_L1
+            };
+            return content.scope().isValid() && content.scope().isList()
+                    && std::find(std::begin(copying), std::end(copying), method.methodName())
+                            != std::end(copying);
+        }
+        case QQmlJSRegisterContent::Literal:
+        case QQmlJSRegisterContent::Operation:
+            return true;
+        case QQmlJSRegisterContent::Property:
+        case QQmlJSRegisterContent::ListValue:
+        case QQmlJSRegisterContent::BaseType:
+        case QQmlJSRegisterContent::Extension:
+        case QQmlJSRegisterContent::Cast:
+            // A part of something else. It is detached if the whole is.
+            content = content.scope();
+            break;
+        default:
+            return false;
+        }
+    }
+    return false;
+}
+
 bool QQmlJSTypePropagator::mergeContextLocal(
-        const ClosureSupport::Local &local, const QQmlJSScope::ConstPtr &type)
+        const ClosureSupport::Local &local, const QQmlJSScope::ConstPtr &type, bool isDetached)
 {
     ClosureSupport *closureSupport = m_function->closureSupport;
     QQmlJSScope::ConstPtr &known = closureSupport->localTypes[local];
@@ -262,20 +310,61 @@ bool QQmlJSTypePropagator::mergeContextLocal(
     // lists of objects, which are backed by a property. A value type or a list of values would
     // have to refer back to where it came from, and a JavaScript object or array cannot be
     // held in a C++ variable at all.
-    if (!m_typeResolver->isNumeric(merged)
-            && merged != m_typeResolver->boolType()
-            && merged != m_typeResolver->stringType()
-            && !merged->isReferenceType()
-            && !merged->isListProperty()) {
-        if (!known)
-            closureSupport->localTypes.remove(local);
-        return false;
+    //
+    // Experiment: Value types and lists of values are kept as copies. See copiedLocalTypes.
+    const auto isPlain = [this](const QQmlJSScope::ConstPtr &type) {
+        return m_typeResolver->isNumeric(type) || type == m_typeResolver->boolType()
+                || type == m_typeResolver->stringType();
+    };
+    const auto isCopyable = [&](const QQmlJSScope::ConstPtr &type) {
+        if (m_typeResolver->storedType(type) != type)
+            return false;
+        switch (type->accessSemantics()) {
+        case QQmlJSScope::AccessSemantics::Value:
+            return type != m_typeResolver->varType() && type != m_typeResolver->jsValueType()
+                    && type != m_typeResolver->jsPrimitiveType()
+                    && type != m_typeResolver->variantMapType()
+                    && type != m_typeResolver->voidType() && type != m_typeResolver->nullType()
+                    && !type->isOpaqueType();
+        case QQmlJSScope::AccessSemantics::Sequence:
+            return type != m_typeResolver->variantListType() && !type->isListProperty()
+                    && type->elementType() && isPlain(type->elementType());
+        default:
+            return false;
+        }
+    };
+
+    if (!isPlain(merged) && !merged->isReferenceType() && !merged->isListProperty()) {
+        if (!isCopyable(merged) || !isDetached) {
+            if (!known)
+                closureSupport->localTypes.remove(local);
+            return false;
+        }
+        closureSupport->copiedLocalTypes.insert(merged);
     }
 
     if (known != merged) {
         known = merged;
         closureSupport->localTypesChanged = true;
     }
+    return true;
+}
+
+/*!
+ * \internal
+ * Returns whether \a content may be the copy of a local that is itself a copy, and reports an
+ * error in that case. To be called where \a content is changed. See copiedLocalTypes.
+ */
+bool QQmlJSTypePropagator::isCapturedCopy(QQmlJSRegisterContent content)
+{
+    const ClosureSupport *closureSupport = m_function->closureSupport;
+    if (!closureSupport || !content.isValid()
+            || !closureSupport->copiedLocalTypes.contains(content.containedType())) {
+        return false;
+    }
+
+    addError(u"Cannot change a value of type %1 in a function that keeps values of that type "
+              "in variables shared with a closure"_s.arg(content.containedType()->internalName()));
     return true;
 }
 
@@ -289,7 +378,7 @@ void QQmlJSTypePropagator::storeContextLocal(int scope, int index)
 
     const ClosureSupport::Local local { m_function->contextChain[scope], index };
     const QQmlJSScope::ConstPtr in = m_state.accumulatorIn().containedType();
-    if (!mergeContextLocal(local, in)) {
+    if (!mergeContextLocal(local, in, isDetachedValue(m_state.accumulatorIn()))) {
         addError(u"Cannot store a value of type %1 in a local of a JavaScript context"_s.arg(
                 in->internalName()));
         return;
@@ -577,6 +666,9 @@ void QQmlJSTypePropagator::generate_StoreElement(int base, int index)
     const QQmlJSRegisterContent baseRegister = m_state.registers[base].content;
     const QQmlJSRegisterContent indexRegister = checkedInputRegister(index);
 
+    if (isCapturedCopy(baseRegister))
+        return;
+
     if (!baseRegister.isList()
             || !m_typeResolver->isNumeric(indexRegister)) {
         const auto jsValue = m_typeResolver->jsValueType();
@@ -762,6 +854,9 @@ void QQmlJSTypePropagator::generate_StoreProperty(int nameIndex, int base)
 {
     auto callBase = m_state.registers[base].content;
     const QString propertyName = m_jsUnitGenerator->stringForIndex(nameIndex);
+
+    if (isCapturedCopy(callBase))
+        return;
 
     QQmlJSRegisterContent property = m_typeResolver->memberType(callBase, propertyName);
     if (!property.isProperty()) {
@@ -996,9 +1091,12 @@ void QQmlJSTypePropagator::generate_CallProperty(int nameIndex, int base, int ar
     if (!member.isMethod()) {
         // A QFuture is a thenable in JavaScript. Call its then() and catch() like any other
         // JavaScript function.
-        // then() and catch() return a promise, which has the same methods.
+        // then() and catch() return a promise, which has the same methods. Whatever else
+        // has such methods and is a JavaScript value may call the callbacks with anything.
         const bool isFutureCall = m_typeResolver->isFuture(baseType);
-        const bool isThenableCall = (isFutureCall || m_promiseRegister == base)
+        const bool isThenableCall = (isFutureCall
+                    || callBase.contains(m_typeResolver->jsValueType())
+                    || callBase.contains(m_typeResolver->varType()))
                 && (propertyName == u"then"_s || propertyName == u"catch"_s);
         if (isThenableCall
                 || callBase.contains(m_typeResolver->jsValueType())
@@ -1014,29 +1112,27 @@ void QQmlJSTypePropagator::generate_CallProperty(int nameIndex, int base, int ar
             // the type of its parameter.
             if (isThenableCall && m_function->closureSupport) {
                 const bool isThen = propertyName == u"then"_s;
+                const QQmlJSScope::ConstPtr varType = m_typeResolver->varType();
                 for (const LoadedClosure &closure : { m_previousClosure, m_closure }) {
-                    QQmlJSScope::ConstPtr argument;
                     if (closure.functionIndex < 0 || closure.registerIndex < argv
                             || closure.registerIndex >= argv + argc) {
                         continue;
-                    } else if (isThen && closure.registerIndex == argv) {
-                        // A promise passes on whatever the previous callback has returned.
-                        argument = isFutureCall
-                                ? m_typeResolver->futureResultType(baseType)
-                                : m_typeResolver->varType();
-                    } else if (closure.registerIndex == argv + (isThen ? 1 : 0)) {
-                        argument = m_typeResolver->varType();
                     }
-                    if (argument) {
-                        m_function->closureSupport->contextualArgumentTypes.insert(
-                                closure.functionIndex, { argument });
-                    }
-                }
-            }
 
-            if (isThenableCall) {
-                m_promiseRegister = Accumulator;
-                m_promiseCreated = true;
+                    // A future passes its result to the first callback of then(). Anything
+                    // else can be a var: a promise passes on whatever the previous callback has
+                    // returned, and errors are JavaScript values.
+                    QList<QQmlJSScope::ConstPtr> arguments(8, varType);
+                    if (isFutureCall && isThen && closure.registerIndex == argv) {
+                        const QQmlJSScope::ConstPtr result
+                                = m_typeResolver->futureResultType(baseType);
+                        if (!result)
+                            continue;
+                        arguments[0] = result;
+                    }
+                    m_function->closureSupport->contextualArgumentTypes.insert(
+                            closure.functionIndex, arguments);
+                }
             }
 
             QQmlJSMetaMethod method;
@@ -1388,6 +1484,14 @@ void QQmlJSTypePropagator::propagateCall(
         return;
     }
 
+    if (!match.isConst() && !match.isJavaScriptFunction() && !match.isConstructor()
+            && scope.isValid() && scope.containedType()
+            && scope.containedType()->accessSemantics() == QQmlJSScope::AccessSemantics::Value
+            && isCapturedCopy(scope)) {
+        setVarAccumulatorAndError();
+        return;
+    }
+
     QQmlJSScope::ConstPtr returnType;
     if (match.isJavaScriptFunction())
         returnType = m_typeResolver->jsValueType();
@@ -1594,6 +1698,15 @@ bool QQmlJSTypePropagator::propagateArrayMethod(
         method.setMethodName(name);
         setAccumulator(m_typeResolver->returnType(method, type, baseType));
     };
+
+    static const QLatin1StringView mutators[] = {
+        "copyWithin"_L1, "fill"_L1, "pop"_L1, "push"_L1, "reverse"_L1, "shift"_L1, "sort"_L1,
+        "splice"_L1, "unshift"_L1
+    };
+    if (std::find(std::begin(mutators), std::end(mutators), name) != std::end(mutators)
+            && isCapturedCopy(baseType)) {
+        return false;
+    }
 
     if (name == u"copyWithin" && argc > 0 && argc < 4) {
         for (int i = 0; i < argc; ++i) {
@@ -2945,13 +3058,6 @@ void QQmlJSTypePropagator::endInstruction(QV4::Moth::Instr::Type instr)
 {
     if (instr != QV4::Moth::Instr::Type::LoadClosure && instr != QV4::Moth::Instr::Type::StoreReg)
         m_closure = m_previousClosure = {};
-
-    // The same for the promise a then() or catch() has returned
-    if (instr != QV4::Moth::Instr::Type::LoadClosure && instr != QV4::Moth::Instr::Type::StoreReg
-            && !m_promiseCreated) {
-        m_promiseRegister = InvalidRegister;
-    }
-    m_promiseCreated = false;
 
     InstructionAnnotation &currentInstruction = m_state.annotations[currentInstructionOffset()];
     currentInstruction.changedRegister = m_state.changedRegister();

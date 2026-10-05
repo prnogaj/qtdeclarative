@@ -97,6 +97,8 @@ private slots:
     void closureArrayMethods();
     void closureCapturedObjects();
     void closureCallValue();
+    void closureCapturedValues();
+    void closureCapturedValuesFallback();
     void closureEscaping();
     void closureEscapingFallback();
     void closureForEach();
@@ -4296,6 +4298,68 @@ void tst_QmlCppCodegen::closureCallValue()
             u"(function() { try { callNothing(thrower) } catch (e) { return 'caught ' + e } "
             "return 'none' })()"_s);
     QCOMPARE(throwing.evaluate().toString(), u"caught ouch"_s);
+}
+
+void tst_QmlCppCodegen::closureCapturedValues()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureCapturedValues.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    double result = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "sumWithOffset", Q_RETURN_ARG(double, result)));
+    QCOMPARE(result, 96.0);
+
+    // The closure keeps what the variables held when it was created.
+    QVariant reader;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "makeReader", Q_RETURN_ARG(QVariant, reader)));
+    o->setProperty("area", QRectF(100, 100, 100, 100));
+    o->setProperty("numbers", QVariant::fromValue(QList<double>{ 7, 7, 7, 7, 7 }));
+    engine.collectGarbage();
+    QJSValue readerFunction = reader.value<QJSValue>();
+    QVERIFY(readerFunction.isCallable());
+    QCOMPARE(readerFunction.call().toNumber(), 1.0 + 3.0 + 3.0 + 2.0);
+
+    o->setProperty("numbers", QVariant::fromValue(QList<double>{ 1, 2, 3 }));
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "scaleAll", Q_RETURN_ARG(double, result)));
+    QCOMPARE(result, 12.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "installScaler"));
+    o->setProperty("factor", 5.0);
+    QJSValue scaler = o->property("later").value<QJSValue>();
+    QVERIFY(scaler.isCallable());
+    QCOMPARE(scaler.call({ QJSValue(3.0) }).toNumber(), 15.0);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "chain",
+            Q_ARG(QVariant, QVariant::fromValue(engine.evaluate(u"Promise.resolve(41)"_s)))));
+    QTRY_COMPARE(o->property("text").toString(), u"got 42"_s);
+}
+
+void tst_QmlCppCodegen::closureCapturedValuesFallback()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureCapturedValuesFallback.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    // These are not compiled. They behave as in the interpreter.
+    QVariant reader;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "makeLiveReader", Q_RETURN_ARG(QVariant, reader)));
+    o->setProperty("area", QRectF(100, 100, 100, 100));
+    QCOMPARE(reader.value<QJSValue>().call().toNumber(), 200.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "makeLiveLength", Q_RETURN_ARG(QVariant, reader)));
+    o->setProperty("numbers", QVariant::fromValue(QList<double>{ 1, 2, 3, 4, 5 }));
+    QCOMPARE(reader.value<QJSValue>().call().toNumber(), 5.0);
+
+    o->setProperty("numbers", QVariant::fromValue(QList<double>{ 1, 2, 3 }));
+    double result = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "moved", Q_RETURN_ARG(double, result)));
+    QCOMPARE(result, 2.0 + 4.0 + 7.0);
 }
 
 void tst_QmlCppCodegen::closureEscaping()
