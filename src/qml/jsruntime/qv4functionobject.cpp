@@ -579,12 +579,21 @@ ReturnedValue ArrowFunction::virtualCall(const QV4::FunctionObject *fo, const Va
     case Function::AotCompiled: {
         const auto &types = function->aotCompiledFunction.types;
         Scope scope(fo->engine());
-        argv = coerceListArguments(scope, types.data(), types.length(), argv, argc);
+        if (function->aotCompiledFunction.hasListArguments)
+            argv = coerceListArguments(scope, types.data(), types.length(), argv, argc);
+
+        // We convert the arguments to what the function declares, and provide all of them. So
+        // there is nothing left to coerce for the frame.
         return QV4::convertAndCall(
-                    fo->engine(), types.data(), types.length(), argv, argc,
-                    [fo, thisObject](void **a, const QMetaType *types, int argc) {
-            ArrowFunction::virtualCallWithMetaTypes(
-                            fo, QV4::cppThisObject(thisObject), a, types, argc);
+                    scope.engine, types.data(), types.length(), argv, argc,
+                    [&](void **a, const QMetaType *frameTypes, int) {
+            Scoped<ExecutionContext> context(scope, self->scope());
+            MetaTypesStackFrame frame;
+            frame.init(function, QV4::cppThisObject(thisObject), context, a, frameTypes,
+                       int(types.length()) - 1);
+            frame.push(scope.engine);
+            Moth::VME::execWithMatchingTypes(&frame, scope.engine);
+            frame.pop(scope.engine);
         });
     }
     case Function::JsTyped:
