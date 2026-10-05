@@ -1572,6 +1572,27 @@ resolveCallbackParameterType(const DomItem &parameterDefinition, const QString &
         "findLast"_L1, "findLastIndex"_L1, "flatMap"_L1
     };
     const QString method = callee.field(Fields::right).field(Fields::identifier).value().toString();
+
+    // The callback of then() on a QFuture<T> gets a T.
+    if (method == "then"_L1) {
+        const DomItem parameters = functionExpression[Fields::parameters];
+        if (parameters.indexes() < 1
+                || parameters[0][Fields::identifier].value().toString() != name) {
+            return {};
+        }
+        const auto qmlFile = parameterDefinition.containingFile().ownerAs<QmlFile>();
+        if (!qmlFile || !qmlFile->typeResolver())
+            return {};
+        const auto future = resolveExpressionType(
+                callee.field(Fields::left), ResolveActualTypeForFieldMemberExpression);
+        if (!future)
+            return {};
+        const QQmlJSScope::ConstPtr result
+                = qmlFile->typeResolver()->futureResultType(future->semanticScope);
+        if (!result)
+            return {};
+        return ExpressionType{ name, result, JavaScriptIdentifier };
+    }
     if (std::find(std::begin(methods), std::end(methods), method) == std::end(methods))
         return {};
 

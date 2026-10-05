@@ -4731,6 +4731,32 @@ void tst_qmlls_utils::completions_data()
             << testFile("completions/contextualTypes.qml") << 21 << 29
             << ExpectedCompletions{  }
             << QStringList{ u"objectName"_s };
+
+    QTest::newRow("contextualType-thenCallback")
+            << testFile("completions/futureThen.qml") << 10 << 72
+            << ExpectedCompletions{ { "shoeSize"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    QTest::newRow("contextualType-listInThenCallback")
+            << testFile("completions/futureThen.qml") << 12 << 57
+            << ExpectedCompletions{ { "shoeSize"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    QTest::newRow("contextualType-rejectionCallback")
+            << testFile("completions/futureThen.qml") << 14 << 84
+            << ExpectedCompletions{  }
+            << QStringList{ u"shoeSize"_s };
+
+    QTest::newRow("contextualType-thenOnVoidFuture")
+            << testFile("completions/futureThen.qml") << 15 << 67
+            << ExpectedCompletions{  }
+            << QStringList{ u"shoeSize"_s };
+
+    QTest::newRow("methodsOfFuture")
+            << testFile("completions/futureThen.qml") << 16 << 36
+            << ExpectedCompletions{ { "then"_L1, CompletionItemKind::Method },
+                                    { "catch"_L1, CompletionItemKind::Method } }
+            << QStringList{ u"shoeSize"_s };
 }
 
 void tst_qmlls_utils::completions()
