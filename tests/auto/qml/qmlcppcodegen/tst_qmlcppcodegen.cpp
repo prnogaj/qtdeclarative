@@ -130,6 +130,7 @@ private slots:
     void destroyAndToString();
     void detachOnAssignment();
     void detachedListAssignment();
+    void detachedValues();
     void detachedReferences();
     void dialogButtonBox();
     void disappearingArrowFunction();
@@ -3991,6 +3992,38 @@ void tst_QmlCppCodegen::listPropertyAsModel()
 
     QQmlListReference children(o.get(), "children");
     QCOMPARE(children.count(), 5);
+}
+
+void tst_QmlCppCodegen::detachedValues()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/detachedValues.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    double result = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "rectAfterSideEffect", Q_RETURN_ARG(double, result),
+            Q_ARG(QRectF, QRectF(1, 2, 3, 4))));
+    QCOMPARE(result, 4.0);
+    QCOMPARE(o->property("counter").toInt(), 1);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "listAfterSideEffect", Q_RETURN_ARG(double, result),
+            Q_ARG(QList<double>, QList<double>({ 1.5, 2.5, 4 }))));
+    QCOMPARE(result, 8.0);
+    QCOMPARE(o->property("counter").toInt(), 4);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "partAfterSideEffect", Q_RETURN_ARG(double, result),
+            Q_ARG(QRectF, QRectF(1, 2, 3, 4))));
+    QCOMPARE(result, 5.0);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "createdAfterSideEffect", Q_RETURN_ARG(double, result), Q_ARG(double, 1.5)));
+    QCOMPARE(result, 5.5);
+    QCOMPARE(o->property("counter").toInt(), 6);
 }
 
 void tst_QmlCppCodegen::closureArrayMethods()

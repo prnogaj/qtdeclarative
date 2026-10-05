@@ -171,6 +171,7 @@ set(qml_files
     destroyAndToString.qml
     detachOnAssignment.qml
     detachedListAssignment.qml
+    detachedValues.qml
     detachedreferences.qml
     dialog.qml
     dialogButtonBox.qml
