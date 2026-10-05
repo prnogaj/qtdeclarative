@@ -325,6 +325,32 @@ inline ReturnedValue coerceListType(
         QV4::Scoped<QmlListWrapper> newList(scope, QmlListWrapper::create(engine, type));
         QQmlListProperty<QObject> *listProperty = newList->d()->property();
 
+        // Experiment: A QList<T *> from C++, for example the result of a QFuture. Take the
+        // objects from the container, without creating a JavaScript wrapper for each.
+        if (const QV4::Sequence *sequence = value.as<QV4::Sequence>()) {
+            const QMetaSequence container = sequence->d()->metaSequence();
+            const QMetaType elementType = container.valueMetaType();
+            const void *data = sequence->d()->storagePointer();
+            if (data && (elementType.flags() & QMetaType::PointerToQObject)
+                    && container.canGetValueAtIndex() && !sequence->d()->isReference()) {
+                // If the C++ type of the elements is the declared one or derived from it,
+                // there is nothing to check for the individual objects.
+                const QMetaObject *expected = listValueType.metaObject();
+                const QMetaObject *actual = elementType.metaObject();
+                const bool allMatch = !qmlType.isComposite() && expected && actual
+                        && actual->inherits(expected);
+                const qsizetype size = container.size(data);
+                for (qsizetype i = 0; i < size; ++i) {
+                    QObject *object = nullptr;
+                    container.valueAtIndex(data, i, &object);
+                    if (!allMatch && object && !qmlobject_can_qml_cast(object, qmlType))
+                        object = nullptr;
+                    listProperty->append(listProperty, object);
+                }
+                return newList->asReturnedValue();
+            }
+        }
+
         const qsizetype length = array->getLength();
         qsizetype i = 0;
         ScopedValue v(scope);
