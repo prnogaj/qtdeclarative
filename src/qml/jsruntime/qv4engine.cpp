@@ -2081,6 +2081,18 @@ QV4::ReturnedValue ExecutionEngine::metaTypeToJS(QMetaType type, const void *dat
 {
     Q_ASSERT(data != nullptr);
 
+    // The common cases first, without comparing meta types
+    switch (type.id()) {
+    case QMetaType::Int:
+        return Encode(*static_cast<const int *>(data));
+    case QMetaType::Double:
+        return Encode(*static_cast<const double *>(data));
+    case QMetaType::Bool:
+        return Encode(*static_cast<const bool *>(data));
+    default:
+        break;
+    }
+
     if (type == QMetaType::fromType<QVariant>()) {
         // unwrap it: this is tested in QJSEngine, and makes the most sense for
         // end-user code too.

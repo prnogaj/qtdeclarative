@@ -33,6 +33,7 @@ public:
     };
 
     static void exec(MetaTypesStackFrame *frame, ExecutionEngine *engine);
+    static void execWithMatchingTypes(MetaTypesStackFrame *frame, ExecutionEngine *engine);
     static QV4::ReturnedValue exec(JSTypesStackFrame *frame, ExecutionEngine *engine);
     static QV4::ReturnedValue interpret(JSTypesStackFrame *frame, ExecutionEngine *engine, const char *codeEntry);
 };

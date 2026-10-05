@@ -416,6 +416,28 @@ private:
 };
 }
 
+static inline void callAotCompiledCode(
+        MetaTypesStackFrame *frame, ExecutionEngine *engine, Function *function, void **argv)
+{
+    QQmlPrivate::AOTCompiledContext aotContext;
+    if (auto context = QV4::ExecutionEngine::qmlContext(frame->context()->d())) {
+        QV4::Heap::QQmlContextWrapper *wrapper = static_cast<Heap::QmlContext *>(context)->qml();
+        aotContext.qmlScopeObject = wrapper->scopeObject;
+        aotContext.qmlContext = wrapper->context;
+    }
+
+    aotContext.engine = engine->jsEngine();
+    aotContext.compilationUnit = function->executableCompilationUnit();
+    function->aotCompiledCode(&aotContext, argv);
+
+    // The tracked-locals storage is a local variable of the AOT-compiled
+    // function. We should not be able to use it between here and the
+    // popping of the stack frame. However, nulling it is a cheap defense
+    // in depth that will make mistaken code crash with a clean null pointer
+    // dereference or skip rather than corrupt random stack values.
+    frame->setLocals(nullptr);
+}
+
 void VME::exec(MetaTypesStackFrame *frame, ExecutionEngine *engine)
 {
     qt_v4ResolvePendingBreakpointsHook();
@@ -439,25 +461,34 @@ void VME::exec(MetaTypesStackFrame *frame, ExecutionEngine *engine)
             frame->returnAndArgTypes(), frame->argc(),
             [frame, engine, function](void **argv, int argc) {
         Q_UNUSED(argc);
-
-        QQmlPrivate::AOTCompiledContext aotContext;
-        if (auto context = QV4::ExecutionEngine::qmlContext(frame->context()->d())) {
-            QV4::Heap::QQmlContextWrapper *wrapper = static_cast<Heap::QmlContext *>(context)->qml();
-            aotContext.qmlScopeObject = wrapper->scopeObject;
-            aotContext.qmlContext = wrapper->context;
-        }
-
-        aotContext.engine = engine->jsEngine();
-        aotContext.compilationUnit = function->executableCompilationUnit();
-        function->aotCompiledCode(&aotContext, argv);
-
-        // The tracked-locals storage is a local variable of the AOT-compiled
-        // function. We should not be able to use it between here and the
-        // popping of the stack frame. However, nulling it is a cheap defense
-        // in depth that will make mistaken code crash with a clean null pointer
-        // dereference or skip rather than corrupt random stack values.
-        frame->setLocals(nullptr);
+        callAotCompiledCode(frame, engine, function, argv);
     });
+}
+
+/*!
+ * \internal
+ * Like exec(), for a frame that holds exactly the arguments and the return value the compiled
+ * function declares, in number and type. Then there is nothing to coerce.
+ */
+void VME::execWithMatchingTypes(MetaTypesStackFrame *frame, ExecutionEngine *engine)
+{
+    qt_v4ResolvePendingBreakpointsHook();
+    if (engine->checkStackLimits()) {
+        frame->setReturnValueUndefined();
+        return;
+    }
+    ExecutionEngineCallDepthRecorder executionEngineCallDepthRecorder(engine);
+
+    Function *function = frame->v4Function;
+    Q_ASSERT(function->aotCompiledCode);
+    Q_ASSERT(frame->argc() + 1 == function->aotCompiledFunction.types.size());
+    Q_TRACE_SCOPE(QQmlV4_function_call, engine, function->name()->toQString(),
+                  function->executableCompilationUnit()->fileName(),
+                  function->compiledFunction->location.line(),
+                  function->compiledFunction->location.column());
+    Profiling::FunctionCallProfiler profiler(engine, function); // start execution profiling
+
+    callAotCompiledCode(frame, engine, function, frame->returnAndArgValues());
 }
 
 ReturnedValue VME::exec(JSTypesStackFrame *frame, ExecutionEngine *engine)
