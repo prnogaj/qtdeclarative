@@ -1226,16 +1226,60 @@ void AOTCompiledContext::loadContextLocal(
 {
     QV4::ExecutionEngine *v4 = engine->handle();
     const QV4::Heap::CallContext *context = callContext(v4, scope);
-    QV4::ExecutionEngine::metaTypeFromJS(context->locals[index], type, target);
+    const QV4::Value &value = context->locals[index];
+
+    // Mostly the local holds what we have stored there.
+    switch (type.id()) {
+    case QMetaType::Int:
+        if (value.isInteger()) {
+            *static_cast<int *>(target) = value.integerValue();
+            return;
+        }
+        break;
+    case QMetaType::Double:
+        if (value.isNumber()) {
+            *static_cast<double *>(target) = value.asDouble();
+            return;
+        }
+        break;
+    case QMetaType::Bool:
+        if (value.isBoolean()) {
+            *static_cast<bool *>(target) = value.booleanValue();
+            return;
+        }
+        break;
+    default:
+        break;
+    }
+
+    QV4::ExecutionEngine::metaTypeFromJS(value, type, target);
 }
 
 void AOTCompiledContext::storeContextLocal(
         int scope, int index, QMetaType type, const void *source) const
 {
     QV4::ExecutionEngine *v4 = engine->handle();
+    QV4::Heap::CallContext *context = callContext(v4, scope);
+
+    // Primitives are not managed by the garbage collector. So we need no scope for them.
+    switch (type.id()) {
+    case QMetaType::Int:
+        context->locals.set(v4, index, QV4::Value::fromInt32(*static_cast<const int *>(source)));
+        return;
+    case QMetaType::Double:
+        context->locals.set(
+                v4, index, QV4::Value::fromDouble(*static_cast<const double *>(source)));
+        return;
+    case QMetaType::Bool:
+        context->locals.set(
+                v4, index, QV4::Value::fromBoolean(*static_cast<const bool *>(source)));
+        return;
+    default:
+        break;
+    }
+
     QV4::Scope scopeForValue(v4);
     QV4::ScopedValue value(scopeForValue, v4->metaTypeToJS(type, source));
-    QV4::Heap::CallContext *context = callContext(v4, scope);
     context->locals.set(v4, index, value);
 }
 
