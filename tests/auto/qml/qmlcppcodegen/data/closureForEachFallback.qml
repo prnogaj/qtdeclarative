@@ -5,27 +5,34 @@ QtObject {
     id: root
 
     property list<real> numbers: [1.5, 2.5, 4]
-    property list<QtObject> objects: [ QtObject {}, QtObject {} ]
-
-    // The outer callback needs a context of its own for "n".
-    function nested(): real {
-        let s = 0
-        root.numbers.forEach(n => {
-            root.objects.forEach(o => { s += n })
-        })
-        return s
-    }
-
     function withArray(): real {
         let s = 0
         root.numbers.forEach((n, i, array) => { s += array[i] })
         return s
     }
 
-    function functionExpression(): real {
-        let s = 0
-        root.numbers.forEach(function(n) { s += n })
-        return s
+    // A function expression has its own "this". It is not the object the outer function
+    // belongs to.
+    function functionWithThis(): bool {
+        let outerThis = false
+        root.numbers.forEach(function(n) { outerThis = (this === root) })
+        return outerThis
+    }
+
+    function functionWithArguments(): int {
+        let count = 0
+        root.numbers.forEach(function(n) { count += arguments.length })
+        return count
+    }
+
+    // An object captured by a closure cannot be held in a C++ variable.
+    function capturedObject(): string {
+        let names = ""
+        const objects = [root, root]
+        root.numbers.forEach(n => {
+            objects.forEach(o => { names += "x" })
+        })
+        return names
     }
 
     function storedCallback(): real {
@@ -33,15 +40,6 @@ QtObject {
         const callback = n => { s += n }
         root.numbers.forEach(callback)
         callback(10)
-        return s
-    }
-
-    function capturingCallback(): real {
-        let s = 0
-        root.numbers.forEach(n => {
-            const add = () => { s += n }
-            add()
-        })
         return s
     }
 }

@@ -12,6 +12,10 @@ Collector {
     property QtObject hiddenOuter: c.createObject()
     property QtObject hiddenInner: c.createObject()
 
+    property QtObject hiddenCaptured: c.createObject()
+    property QtObject hiddenNested: c.createObject()
+    property QtObject keptCaptured
+    property QtObject keptNested
     property QtObject keptOuter
     property QtObject keptInner
     property int gcRuns: 0
@@ -39,5 +43,38 @@ Collector {
 
         self.gcRuns = runs
         self.keptOuter = outerObject
+    }
+
+    // The object is only referred to by a variable the callback captures. It gets there in
+    // one call of the callback and has to survive the garbage collection in the next ones,
+    // when the registers of the first call are gone.
+    function runCaptured(): void {
+        var captured = self.c
+        let runs = 0
+        self.numbers.forEach(n => {
+            if (n == 1) {
+                captured = self.hiddenCaptured
+                self.hiddenCaptured = null
+            } else {
+                runs += self.gc
+            }
+        })
+        self.gcRuns = runs
+        self.keptCaptured = captured
+    }
+
+    // The same for a variable of the callback, captured by a closure inside it.
+    function runNested(): void {
+        let runs = 0
+        self.numbers.forEach(n => {
+            var mine = self.hiddenNested
+            self.hiddenNested = null
+            self.numbers.forEach(m => {
+                runs += self.gc
+                if (n == 1 && m == 3)
+                    self.keptNested = mine
+            })
+        })
+        self.gcRuns = runs
     }
 }

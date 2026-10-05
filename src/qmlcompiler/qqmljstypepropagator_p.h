@@ -212,6 +212,10 @@ protected:
     virtual void propagateCall(
             const QList<QQmlJSMetaMethod> &methods, int argc, int argv,
             QQmlJSRegisterContent scope);
+    void loadContextLocal(int scope, int index);
+    void storeContextLocal(int scope, int index);
+    bool mergeContextLocal(
+            const ClosureSupport::Local &local, const QQmlJSScope::ConstPtr &type);
     bool propagateValueTypeFactory(
             const QString &name, QQmlJSRegisterContent scope, int argc, int argv);
 

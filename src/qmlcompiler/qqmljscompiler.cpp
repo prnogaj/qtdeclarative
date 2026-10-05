@@ -897,8 +897,11 @@ const QV4::Compiler::Context *QQmlJSAotCompiler::initializeClosure(
         return fail(u"Cannot find the closure to inline"_s);
 
     // "this" and "arguments" of other functions are not those of the outer function.
-    if (!context->isArrowFunction)
-        return fail(u"Cannot inline a closure that is not an arrow function"_s);
+    if (!context->isArrowFunction
+            && (context->usesThis || context->innerFunctionAccessesThis
+                || context->usesArgumentsObject == QV4::Compiler::Context::UsesArgumentsObject::Used)) {
+        return fail(u"Cannot inline a function that uses its own \"this\" or \"arguments\""_s);
+    }
 
     const qsizetype formals = context->arguments.size();
     if (formals > argumentTypes.size())
@@ -907,6 +910,14 @@ const QV4::Compiler::Context *QQmlJSAotCompiler::initializeClosure(
     closure->closureSupport = outer->closureSupport;
     closure->identity = context;
     closure->isInlinedClosure = true;
+    closure->contextChain = outer->contextChain;
+    if (context->requiresExecutionContext) {
+        // Its variables are captured in turn. It gets a context of its own on each call.
+        closure->contextChain.prepend(context);
+        closure->ownsContext = true;
+        if (context->argumentsCanEscape)
+            closure->firstArgumentLocal = context->locals.size();
+    }
     closure->qmlScope = outer->qmlScope;
     closure->addressableScopes = outer->addressableScopes;
     closure->argumentTypes = argumentTypes.first(formals);
@@ -1075,8 +1086,12 @@ QQmlJSAotFunction QQmlJSAotCompiler::doCompile(
     QQmlJSCompilePass::Function withClosures = *function;
     withClosures.closureSupport = &closureSupport;
     withClosures.identity = context;
-    if (context->argumentsCanEscape)
-        withClosures.firstArgumentLocal = context->locals.size();
+    if (context->requiresExecutionContext) {
+        withClosures.contextChain = { context };
+        withClosures.ownsContext = true;
+        if (context->argumentsCanEscape)
+            withClosures.firstArgumentLocal = context->locals.size();
+    }
     return compilePasses(context, &withClosures);
 }
 
