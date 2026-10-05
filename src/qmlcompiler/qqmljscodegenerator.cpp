@@ -1525,6 +1525,68 @@ static bool canTypeBeAffectedBySideEffects(
     return true;
 }
 
+/*!
+ * \internal
+ * Experiment: A value type or sequence that was passed to this function as argument, or that
+ * was created in this function, or a part of such a value, is a copy. Nothing outside of this
+ * function can change it.
+ *
+ * This is how compiled code has always held such values. The interpreter differs: There, an
+ * argument can be a reference to a property of the caller, and a value passed on to another
+ * JavaScript function can be changed by it.
+ *
+ * This does not hold for anything that can be a JavaScript object or array: var, QJSValue,
+ * QVariantMap, QVariantList. Those are references in JavaScript, and other code can rightfully
+ * change them.
+ */
+bool QQmlJSCodeGenerator::isDetachedValue(QQmlJSRegisterContent content) const
+{
+    const auto isCopied = [this](const QQmlJSScope::ConstPtr &type) {
+        switch (type->accessSemantics()) {
+        case QQmlJSScope::AccessSemantics::Value:
+            return type != m_typeResolver->varType()
+                    && type != m_typeResolver->jsValueType()
+                    && type != m_typeResolver->variantMapType();
+        case QQmlJSScope::AccessSemantics::Sequence:
+            return type != m_typeResolver->variantListType();
+        default:
+            return false;
+        }
+    };
+
+    for (int depth = 0; depth < 16 && content.isValid(); ++depth) {
+        content = m_typeResolver->original(content);
+        if (!isCopied(content.containedType()))
+            return false;
+
+        for (QQmlJSRegisterContent argument : m_function->argumentTypes) {
+            if (content == argument || content == m_typeResolver->original(argument))
+                return true;
+        }
+
+        switch (content.variant()) {
+        case QQmlJSRegisterContent::MethodCall:
+            // Methods implemented in C++ return copies. JavaScript functions may return
+            // references.
+            return !content.methodCall().isJavaScriptFunction();
+        case QQmlJSRegisterContent::Property:
+        case QQmlJSRegisterContent::ListValue:
+        case QQmlJSRegisterContent::BaseType:
+        case QQmlJSRegisterContent::Extension:
+        case QQmlJSRegisterContent::Cast: {
+            // A part of something else. It is detached if the whole is. A property of an
+            // object is not.
+            content = content.scope();
+            break;
+        }
+        default:
+            return false;
+        }
+    }
+
+    return false;
+}
+
 bool QQmlJSCodeGenerator::isRegisterAffectedBySideEffects(int registerIndex)
 {
     if (!m_state.isRegisterAffectedBySideEffects(registerIndex))
@@ -1537,12 +1599,17 @@ bool QQmlJSCodeGenerator::isRegisterAffectedBySideEffects(int registerIndex)
 
         const auto &origins = baseType.conversionOrigins();
         for (QQmlJSRegisterContent origin : origins) {
+            if (isDetachedValue(origin))
+                continue;
             if (canTypeBeAffectedBySideEffects(m_typeResolver, m_typeResolver->original(origin)))
                 return true;
         }
 
         return false;
     }
+
+    if (isDetachedValue(baseType))
+        return false;
 
     return canTypeBeAffectedBySideEffects(m_typeResolver, m_typeResolver->original(baseType));
 }
@@ -1754,7 +1821,7 @@ void QQmlJSCodeGenerator::generate_GetLookupHelper(int index)
     } else if (accumulatorIn.isStoredIn(m_typeResolver->variantMapType())) {
         m_body += generateVariantMapGetLookup(m_state.accumulatorVariableIn, index);
     } else {
-        if (m_state.isRegisterAffectedBySideEffects(Accumulator))
+        if (isRegisterAffectedBySideEffects(Accumulator))
             REJECT(u"reading from a value that's potentially affected by side effects"_s);
 
         const QString inputContentPointer = resolveValueTypeContentPointer(

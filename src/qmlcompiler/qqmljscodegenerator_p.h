@@ -420,6 +420,7 @@ private:
     }
 
     bool isRegisterAffectedBySideEffects(int registerIndex);
+    bool isDetachedValue(QQmlJSRegisterContent content) const;
 
     // map from instruction offset to sequential label number
     QHash<int, QString> m_labels;
