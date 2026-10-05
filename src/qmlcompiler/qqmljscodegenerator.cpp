@@ -2722,6 +2722,36 @@ bool QQmlJSCodeGenerator::inlineArrayMethod(const QString &name, int base, int a
         return true;
     }
 
+    if (name == u"push" && argc > 0
+            && !baseType.isStoredIn(m_typeResolver->listPropertyType())
+            && baseType.storedType()->accessSemantics() == QQmlJSScope::AccessSemantics::Sequence) {
+        // A list of values. We hold a copy of it. If that copy can be outdated, appending to it
+        // and writing it back would undo what happened to the original in the meantime.
+        if (isRegisterAffectedBySideEffects(base))
+            REJECT<bool>(u"push() on a sequence potentially affected by side effects"_s);
+
+        m_body += u"{\n"_s;
+        m_body += u"    qsizetype length = 0;\n"_s;
+        m_body += u"    Q_UNUSED(length);\n"_s;
+        for (int i = 0; i < argc; ++i) {
+            m_body += u"    length = "_s + qjsListMethod
+                    + convertStored(registerType(argv + i).storedType(), elementType,
+                                    consumedRegisterVariable(argv + i))
+                    + u");\n"_s;
+        }
+        if (!m_state.accumulatorVariableOut.isEmpty()) {
+            m_body += u"    "_s + m_state.accumulatorVariableOut + u" = "_s
+                    + conversion(m_typeResolver->sizeType(), m_state.accumulatorOut(),
+                                 u"length"_s)
+                    + u";\n"_s;
+        }
+        m_body += u"}\n"_s;
+
+        // If the list came from a property, the property gets the new list.
+        generateWriteBack(base);
+        return true;
+    }
+
     if (name == u"push" && argc > 0 && baseType.isStoredIn(m_typeResolver->listPropertyType())) {
         // Our QQmlListProperty only keeps plain QObject*. The type propagator has made sure that
         // the arguments are of the element type.
