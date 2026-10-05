@@ -138,6 +138,7 @@ set(qml_files
     collector.qml
     closureArrayMethods.qml
     closureCapturedObjects.qml
+    closureCallValue.qml
     closureEscaping.qml
     closureEscapingFallback.qml
     closureForEach.qml
