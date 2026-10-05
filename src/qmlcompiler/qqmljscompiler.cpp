@@ -861,13 +861,15 @@ namespace {
 struct InlinedClosures : QQmlJSCompilePass::ClosureSupport
 {
     using Analyze = std::function<bool(
-            int, const QQmlJSCompilePass::Function *, const QList<QQmlJSRegisterContent> &)>;
+            int, const QQmlJSCompilePass::Function *, const QList<QQmlJSRegisterContent> &,
+            const QQmlJSScope::ConstPtr &)>;
 
     bool analyzeClosure(
             int functionIndex, const QQmlJSCompilePass::Function *outer,
-            const QList<QQmlJSRegisterContent> &argumentTypes) override
+            const QList<QQmlJSRegisterContent> &argumentTypes,
+            const QQmlJSScope::ConstPtr &returnType) override
     {
-        return analyze(functionIndex, outer, argumentTypes);
+        return analyze(functionIndex, outer, argumentTypes, returnType);
     }
 
     Analyze analyze;
@@ -882,7 +884,8 @@ struct InlinedClosures : QQmlJSCompilePass::ClosureSupport
  */
 const QV4::Compiler::Context *QQmlJSAotCompiler::initializeClosure(
         int functionIndex, const QQmlJSCompilePass::Function *outer,
-        const QList<QQmlJSRegisterContent> &argumentTypes, QQmlJSCompilePass::Function *closure)
+        const QList<QQmlJSRegisterContent> &argumentTypes,
+        const QQmlJSScope::ConstPtr &returnType, QQmlJSCompilePass::Function *closure)
 {
     const auto fail = [&](const QString &message) {
         m_logger->logCompileError(message, QQmlJS::SourceLocation());
@@ -907,7 +910,9 @@ const QV4::Compiler::Context *QQmlJSAotCompiler::initializeClosure(
     closure->qmlScope = outer->qmlScope;
     closure->addressableScopes = outer->addressableScopes;
     closure->argumentTypes = argumentTypes.first(formals);
-    closure->returnType = m_typeResolver.namedType(m_typeResolver.voidType());
+    // Without a return type, the type propagator infers one. See inferredReturnType.
+    if (returnType)
+        closure->returnType = m_typeResolver.namedType(returnType);
     for (int i = QQmlJSCompilePass::FirstArgument + formals;
          i < context->registerCountInFunction; ++i) {
         closure->registerTypes.append(m_typeResolver.namedType(m_typeResolver.voidType()));
@@ -982,12 +987,17 @@ QQmlJSAotFunction QQmlJSAotCompiler::compilePasses(
     std::sort(closures.begin(), closures.end());
 
     for (int functionIndex : std::as_const(closures)) {
-        const QList<QQmlJSRegisterContent> argumentTypes
-                = closureSupport->closures.value(functionIndex).argumentTypes;
+        const QQmlJSCompilePass::ClosureSupport::Closure analyzed
+                = closureSupport->closures.value(functionIndex);
+        if (!analyzed.returnType) {
+            m_logger->logCompileError(
+                    u"Cannot determine the return type of a closure"_s, QQmlJS::SourceLocation());
+            return QQmlJSAotFunction();
+        }
 
         QQmlJSCompilePass::Function closure;
-        const QV4::Compiler::Context *closureContext
-                = initializeClosure(functionIndex, function, argumentTypes, &closure);
+        const QV4::Compiler::Context *closureContext = initializeClosure(
+                functionIndex, function, analyzed.argumentTypes, analyzed.returnType, &closure);
         if (!closureContext)
             return QQmlJSAotFunction();
 
@@ -1011,6 +1021,7 @@ QQmlJSAotFunction QQmlJSAotCompiler::compilePasses(
             result.argumentStorage.append(
                     m_typeResolver.original(argument.storage()).containedType());
         }
+        result.returnStorage = closure.returnType.storedType();
     }
 
     QQmlJSCodeGenerator codegen(context, m_unitGenerator, &m_typeResolver, m_logger, blocks,
@@ -1032,14 +1043,24 @@ QQmlJSAotFunction QQmlJSAotCompiler::doCompile(
     InlinedClosures closureSupport;
     closureSupport.analyze = [this, &closureSupport](
                                      int functionIndex, const QQmlJSCompilePass::Function *outer,
-                                     const QList<QQmlJSRegisterContent> &argumentTypes) {
+                                     const QList<QQmlJSRegisterContent> &argumentTypes,
+                                     const QQmlJSScope::ConstPtr &returnType) {
         QQmlJSCompilePass::Function closure;
-        const QV4::Compiler::Context *closureContext
-                = initializeClosure(functionIndex, outer, argumentTypes, &closure);
+        const QV4::Compiler::Context *closureContext = initializeClosure(
+                functionIndex, outer, argumentTypes, returnType, &closure);
         if (!closureContext)
             return false;
 
-        closureSupport.closures[functionIndex].argumentTypes = closure.argumentTypes;
+        // The closure may analyze further closures. So, don't hold on to its entry.
+        QQmlJSScope::ConstPtr inferredReturnType;
+        if (!returnType)
+            closure.inferredReturnType = &inferredReturnType;
+        const auto recordTypes = qScopeGuard([&]() {
+            QQmlJSCompilePass::ClosureSupport::Closure &analyzed
+                    = closureSupport.closures[functionIndex];
+            analyzed.argumentTypes = closure.argumentTypes;
+            analyzed.returnType = returnType ? returnType : inferredReturnType;
+        });
 
         bool basicBlocksValidationFailed = false;
         QQmlJSBasicBlocks basicBlocks(closureContext, m_unitGenerator, &m_typeResolver, m_logger);
@@ -1054,6 +1075,8 @@ QQmlJSAotFunction QQmlJSAotCompiler::doCompile(
     QQmlJSCompilePass::Function withClosures = *function;
     withClosures.closureSupport = &closureSupport;
     withClosures.identity = context;
+    if (context->argumentsCanEscape)
+        withClosures.firstArgumentLocal = context->locals.size();
     return compilePasses(context, &withClosures);
 }
 

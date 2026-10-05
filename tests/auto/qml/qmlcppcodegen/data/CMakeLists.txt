@@ -134,6 +134,7 @@ set(qml_files
     childobject.qml
     aotLocalsGarbage.qml
     collector.qml
+    closureArrayMethods.qml
     closureForEach.qml
     closureForEachFallback.qml
     closureForEachGc.qml

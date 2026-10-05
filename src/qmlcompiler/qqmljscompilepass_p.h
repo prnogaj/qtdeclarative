@@ -114,8 +114,13 @@ public:
             // Types of the arguments the closure is called with
             QList<QQmlJSRegisterContent> argumentTypes;
 
+            // What the caller converts the result to (void if it ignores it), or what the
+            // closure returns if the caller takes whatever that is.
+            QQmlJSScope::ConstPtr returnType;
+
             // Filled in before the code for the outer function is generated
             QList<QQmlJSScope::ConstPtr> argumentStorage;
+            QQmlJSScope::ConstPtr returnStorage;
             QString code;
             QStringList includes;
         };
@@ -123,10 +128,13 @@ public:
         virtual ~ClosureSupport() = default;
 
         // Run the type propagation on the closure with the given index, as it would be called
-        // with the given arguments. This may change localTypes.
+        // with the given arguments. This may change localTypes. If returnType is null, the
+        // return type is inferred from what the closure returns. Either way, it is stored in
+        // closures afterwards.
         virtual bool analyzeClosure(
                 int functionIndex, const Function *outer,
-                const QList<QQmlJSRegisterContent> &argumentTypes) = 0;
+                const QList<QQmlJSRegisterContent> &argumentTypes,
+                const QQmlJSScope::ConstPtr &returnType) = 0;
 
         static QString localName(int index) { return QStringLiteral("c_local%1").arg(index); }
 
@@ -150,6 +158,14 @@ public:
         ClosureSupport *closureSupport = nullptr;
         const void *identity = nullptr;
         bool isInlinedClosure = false;
+
+        // If the arguments are captured by a closure, they are locals of the call context, too,
+        // starting at this index.
+        int firstArgumentLocal = -1;
+
+        // If set, the function has no return type yet. The type propagator merges the types of
+        // all returned values into this.
+        QQmlJSScope::ConstPtr *inferredReturnType = nullptr;
 
         QQmlJSScopesById addressableScopes;
         QList<QQmlJSRegisterContent> argumentTypes;
