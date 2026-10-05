@@ -2610,6 +2610,14 @@ void QQmlJSCodeGenerator::generate_CallPropertyLookup(int index, int base, int a
     const QQmlJSRegisterContent baseType = registerType(base);
     const QString name = m_jsUnitGenerator->lookupName(index);
 
+    // Qt.vector3d() and friends, propagated as constructor of the value type
+    if (const QQmlJSRegisterContent result = originalType(m_state.accumulatorOut());
+            result.isMethodCall() && result.methodCall().isConstructor()
+            && result.containedType()->isValueType()) {
+        generateValueTypeConstruction(argc, argv);
+        return;
+    }
+
     if (scope == m_typeResolver->mathObject()) {
         if (inlineMathMethod(name, argc, argv))
             return;
@@ -2750,6 +2758,33 @@ void QQmlJSCodeGenerator::generate_TailCall(int func, int thisObject, int argc, 
     BYTECODE_UNIMPLEMENTED();
 }
 
+void QQmlJSCodeGenerator::generateValueTypeConstruction(int argc, int argv)
+{
+    const QQmlJSRegisterContent originalResult = originalType(m_state.accumulatorOut());
+    const QQmlJSScope::ConstPtr originalContained = originalResult.containedType();
+
+    const QQmlJSMetaMethod ctor = originalResult.methodCall();
+    if (ctor.isJavaScriptFunction())
+        REJECT(u"calling JavaScript constructor "_s + ctor.methodName());
+
+    QList<QQmlJSRegisterContent> argumentTypes;
+    QStringList arguments;
+    for (int i = 0; i < argc; ++i) {
+        argumentTypes.append(registerType(argv + i));
+        arguments.append(consumedRegisterVariable(argv + i));
+    }
+
+    const QQmlJSScope::ConstPtr extension = originalContained->extensionType().scope;
+    const QString result = generateCallConstructor(
+            ctor, argumentTypes, arguments, metaType(originalContained),
+            metaObject(extension ? extension : originalContained));
+
+    m_body += m_state.accumulatorVariableOut + u" = "_s
+            + conversion(m_pool->storedIn(originalResult, m_typeResolver->varType()),
+                         m_state.accumulatorOut(), result)
+            + u";\n"_s;
+}
+
 void QQmlJSCodeGenerator::generate_Construct(int func, int argc, int argv)
 {
     INJECT_TRACE_INFO(generate_Construct);
@@ -2827,26 +2862,7 @@ void QQmlJSCodeGenerator::generate_Construct(int func, int argc, int argv)
 
     const QQmlJSScope::ConstPtr originalContained = originalResult.containedType();
     if (originalContained->isValueType() && originalResult.isMethodCall()) {
-        const QQmlJSMetaMethod ctor = originalResult.methodCall();
-        if (ctor.isJavaScriptFunction())
-            REJECT(u"calling JavaScript constructor "_s + ctor.methodName());
-
-        QList<QQmlJSRegisterContent> argumentTypes;
-        QStringList arguments;
-        for (int i = 0; i < argc; ++i) {
-            argumentTypes.append(registerType(argv + i));
-            arguments.append(consumedRegisterVariable(argv + i));
-        }
-
-        const QQmlJSScope::ConstPtr extension = originalContained->extensionType().scope;
-        const QString result = generateCallConstructor(
-                ctor, argumentTypes, arguments, metaType(originalContained),
-                metaObject(extension ? extension : originalContained));
-
-        m_body += m_state.accumulatorVariableOut + u" = "_s
-                + conversion(m_pool->storedIn(originalResult, m_typeResolver->varType()),
-                             m_state.accumulatorOut(), result)
-                + u";\n"_s;
+        generateValueTypeConstruction(argc, argv);
 
         return;
     }

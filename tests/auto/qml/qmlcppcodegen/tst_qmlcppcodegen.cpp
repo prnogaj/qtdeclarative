@@ -331,6 +331,7 @@ private slots:
     void valueTypeArgument();
     void valueTypeBehavior();
     void valueTypeConstructorArguments();
+    void valueTypeFactories();
     void valueTypeLists();
     void valueTypeProperty();
     void variantMapLookup();
@@ -6652,6 +6653,32 @@ void tst_QmlCppCodegen::valueTypeConstructorArguments()
     QCOMPARE(o->property("m").value<QMatrix4x4>(),
              QMatrix4x4(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16));
     QCOMPARE(o->property("fromInts").value<QVector3D>(), QVector3D(5, 6, 7));
+}
+
+void tst_QmlCppCodegen::valueTypeFactories()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/valueTypeFactories.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    QCOMPARE(o->property("v2").value<QVector2D>(), QVector2D(1, 2));
+    QCOMPARE(o->property("v3").value<QVector3D>(), QVector3D(1, 2, 3));
+    QCOMPARE(o->property("v4").value<QVector4D>(), QVector4D(1, 2, 3, 4));
+    QCOMPARE(o->property("q").value<QQuaternion>(), QQuaternion(1, 2, 3, 4));
+    QCOMPARE(o->property("m").value<QMatrix4x4>(),
+             QMatrix4x4(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16));
+
+    double sum = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumOfComponents", Q_RETURN_ARG(double, sum), Q_ARG(double, 1.5)));
+    QCOMPARE(sum, 6.5);
+
+    QVector3D made;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "make", Q_RETURN_ARG(QVector3D, made), Q_ARG(double, 1.5), Q_ARG(int, 2)));
+    QCOMPARE(made, QVector3D(1.5, 2, 0.5));
 }
 
 void tst_QmlCppCodegen::valueTypeLists()
