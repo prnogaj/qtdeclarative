@@ -91,7 +91,7 @@ QQmlJSCompilePass::BlocksAndAnnotations QQmlJSTypePropagator::run(const Function
 
 void QQmlJSTypePropagator::generate_Ret()
 {
-    if (m_function->isInlinedClosure) {
+    if (m_function->isInlinedClosure || m_function->inferredReturnType) {
         const QQmlJSRegisterContent in = m_state.accumulatorIn();
         if (QQmlJSScope::ConstPtr *inferred = m_function->inferredReturnType) {
             // The caller takes whatever we return.
@@ -338,6 +338,10 @@ void QQmlJSTypePropagator::generate_LoadClosure(int value)
 
     // If the closure is stored in a register and passed to a method right away, it may be inlined.
     m_closure = { value, currentInstructionOffset(), Accumulator };
+    if (ClosureSupport *closureSupport = m_function->closureSupport) {
+        closureSupport->loadedClosures.insert(
+                { m_function->identity, currentInstructionOffset() }, value);
+    }
 }
 
 void QQmlJSTypePropagator::generate_LoadName(int nameIndex)

@@ -87,6 +87,13 @@ public:
 
     LookupSignatures lookupSignatures() const { return m_lookupSignatures; }
 
+    // Code for the closures that the function compiled last creates as function objects, by
+    // function index
+    QHash<int, QQmlJSAotFunction> takeClosureFunctions()
+    {
+        return std::exchange(m_closureFunctions, {});
+    }
+
     bool isLintCompiler() const { return m_flags & IsLintCompiler; }
     bool noAotValidation() const { return m_flags & NoAOTValidation; }
 
@@ -118,6 +125,11 @@ private:
             int functionIndex, const QQmlJSCompilePass::Function *outer,
             const QList<QQmlJSRegisterContent> &argumentTypes,
             const QQmlJSScope::ConstPtr &returnType, QQmlJSCompilePass::Function *closure);
+    const QV4::Compiler::Context *initializeEscapingClosure(
+            int functionIndex, const QQmlJSCompilePass::Function *outer,
+            const QQmlJSScope::ConstPtr &returnType, QQmlJSCompilePass::Function *closure);
+    bool analyzeEscapingClosures(const QQmlJSCompilePass::Function *function);
+    QHash<int, QQmlJSAotFunction> m_closureFunctions;
     QQmlJSAotFunction compilePasses(
             const QV4::Compiler::Context *context, const QQmlJSCompilePass::Function *function);
     QQmlJSAotFunction doCompile(
