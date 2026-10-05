@@ -86,6 +86,7 @@ private slots:
     void valueTypeConversions();
     void readReferenceOnGetOwnProperty();
     void constructors();
+    void constructedPrototype();
 
 private:
     QQmlEngine engine;
@@ -1939,6 +1940,29 @@ void tst_qqmlvaluetypes::constructors()
     QCOMPARE(o->property("matrix4x4"), QVariant(QMatrix4x4()));
     QCOMPARE(o->property("font"), QVariant(QFont()));
     QCOMPARE(o->property("easeCurve"), QVariant(QEasingCurve()));
+}
+
+void tst_qqmlvaluetypes::constructedPrototype()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, testFileUrl("constructedPrototype.qml"));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+
+    QScopedPointer<QObject> o(c.create());
+    QVERIFY(!o.isNull());
+
+    // A value created with "new" is the same kind of value as one created in any other way.
+    QCOMPARE(o->property("constructedMatrix").toString(),
+             QLatin1String("QMatrix4x4(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1)"));
+    QCOMPARE(o->property("constructedMatrix"), o->property("createdMatrix"));
+    QVERIFY(o->property("constructedEasingCurve").toString().startsWith(
+            QLatin1String("QEasingCurve(Linear")));
+    QVERIFY(o->property("samePrototype").toBool());
+    QVERIFY(o->property("isInstance").toBool());
+    QVERIFY(o->property("hasConstructor").toBool());
+
+    // An object type still has the type as prototype.
+    QVERIFY(o->property("objectPrototype").toBool());
 }
 
 #undef CHECK_TYPE_IS_NOT_VALUETYPE
