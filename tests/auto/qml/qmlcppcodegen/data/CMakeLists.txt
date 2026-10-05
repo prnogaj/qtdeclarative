@@ -246,6 +246,7 @@ set(qml_files
     listOfInlineComponent.qml
     listOfInvisible.qml
     listPropertyAsModel.qml
+    listPropertyPush.qml
     listToString.qml
     listlength.qml
     markJSValue.qml
