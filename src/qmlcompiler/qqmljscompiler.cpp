@@ -1006,9 +1006,12 @@ const QV4::Compiler::Context *QQmlJSAotCompiler::initializeEscapingClosure(
     if (context->isGenerator)
         return fail(u"Cannot compile a generator function as closure"_s);
 
-    // We don't know what "this" is when someone else calls the function object.
-    if (context->usesThis || context->innerFunctionAccessesThis
-            || context->usesArgumentsObject == QV4::Compiler::Context::UsesArgumentsObject::Used) {
+    // We don't know what "this" is when someone else calls the function object. An arrow
+    // function has no "this" of its own. It reads the one of the function around it from a
+    // local of that function's context.
+    if (context->usesArgumentsObject == QV4::Compiler::Context::UsesArgumentsObject::Used
+            || (!context->isArrowFunction
+                && (context->usesThis || context->innerFunctionAccessesThis))) {
         return fail(u"Cannot compile a closure that uses \"this\" or \"arguments\""_s);
     }
 
