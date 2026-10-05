@@ -858,8 +858,11 @@ bool ScriptFormatter::visit(FunctionExpression *ast)
         outWithComments(ast->identifierToken, ast);
     }
 
+    // A parameter with a type annotation, or a return type, needs the parentheses.
     const bool removeParentheses = ast->isArrowFunction && ast->formals && !ast->formals->next
-            && (ast->formals->element && !ast->formals->element->bindingTarget);
+            && (ast->formals->element && !ast->formals->element->bindingTarget
+                && !ast->formals->element->typeAnnotation)
+            && !ast->typeAnnotation;
 
     // note: qmlformat removes the parentheses for "(x) => x". In that case, we still need
     // to print potential comments attached to `(` or `)` via `OnlyComments` option.

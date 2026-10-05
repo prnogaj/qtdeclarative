@@ -328,6 +328,8 @@ private slots:
     void typePropagationLoop();
     void typePropertyClash();
     void typedArray();
+    void typedArrowFunctions();
+    void typedArrowFunctionsFallback();
     void unclearComponentBoundaries();
     void undefinedResets();
     void undefinedToDouble();
@@ -4338,6 +4340,63 @@ void tst_QmlCppCodegen::closureEscapingFallback()
 
     QJSValue usesThis = make("usesThis");
     QVERIFY(!usesThis.call().toBool());
+}
+
+void tst_QmlCppCodegen::typedArrowFunctions()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/typedArrowFunctions.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    double real = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "sumTyped", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 10.5);
+
+    QList<double> reals;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "doubledTyped", Q_RETURN_ARG(QList<double>, reals)));
+    QCOMPARE(reals, QList<double>({ 3, 5, 8 }));
+
+    bool boolean = false;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "anyAboveTyped", Q_RETURN_ARG(bool, boolean), Q_ARG(double, 3.0)));
+    QVERIFY(boolean);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "anyAboveTyped", Q_RETURN_ARG(bool, boolean), Q_ARG(double, 4.0)));
+    QVERIFY(!boolean);
+
+    QVariant scalerVariant;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "makeScaler", Q_RETURN_ARG(QVariant, scalerVariant), Q_ARG(double, 2.5)));
+    QJSValue scaler = scalerVariant.value<QJSValue>();
+    QVERIFY(scaler.isCallable());
+    QCOMPARE(scaler.call({ 2 }).toNumber(), 5.0);
+    QCOMPARE(scaler.call({ u"4"_s }).toNumber(), 10.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "installAdder"));
+    QJSValue adder = o->property("callback").value<QJSValue>();
+    QCOMPARE(adder.call({ 1.5, 2 }).toNumber(), 3.5);
+
+    // The second parameter is declared as int.
+    QCOMPARE(adder.call({ 1, 2.75 }).toNumber(), 6.5);
+}
+
+void tst_QmlCppCodegen::typedArrowFunctionsFallback()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/typedArrowFunctionsFallback.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    double real = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "sumAsIntegers", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 7.0);
+
+    QStringList strings;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "asStrings", Q_RETURN_ARG(QStringList, strings)));
+    QCOMPARE(strings, QStringList({ u"3"_s, u"5"_s, u"8"_s }));
 }
 
 void tst_QmlCppCodegen::closureForEach()
