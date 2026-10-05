@@ -693,6 +693,15 @@ namespace QQmlPrivate
         QJSValue callValueMethod(
                 const QJSValue &object, const QString &name, const QJSValue *arguments,
                 int argc) const;
+
+        // Experiment: Call a JavaScript value as function. An exception is left pending.
+        QJSValue callValue(const QJSValue &function, int argc, const QMetaType *types,
+                           const void *const *arguments) const;
+
+        // The same for callers that want a primitive value: no allocation for the result.
+        QJSPrimitiveValue callValueForPrimitive(
+                const QJSValue &function, int argc, const QMetaType *types,
+                const void *const *arguments) const;
         void setReturnValueUndefined() const;
 
         static void mark(QObject *object, QV4::MarkStack *markStack);

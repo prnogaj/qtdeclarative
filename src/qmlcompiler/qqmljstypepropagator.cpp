@@ -845,11 +845,31 @@ void QQmlJSTypePropagator::generate_Resume(int)
 
 void QQmlJSTypePropagator::generate_CallValue(int name, int argc, int argv)
 {
+    // Experiment: Call whatever is in the register as a JavaScript function, with JavaScript
+    // values as arguments, as the interpreter does. If it is no function, that throws.
+    if (!m_function->closureSupport || !m_state.registers.contains(name)) {
+        m_state.setHasExternalSideEffects();
+        INSTR_PROLOGUE_NOT_IMPLEMENTED_POPULATES_ACC();
+    }
+
+    // The arguments are passed as what they are. If the function is a compiled one that takes
+    // those types, they never become JavaScript values.
+    const QQmlJSRegisterContent callee = m_state.registers[name].content;
+    const QQmlJSScope::ConstPtr jsValueType = m_typeResolver->jsValueType();
+    addReadRegister(name, jsValueType);
+    for (int i = 0; i < argc; ++i) {
+        const QQmlJSRegisterContent argument = checkedInputRegister(argv + i);
+        if (!argument.isValid())
+            return;
+        addReadRegister(argv + i, argument);
+    }
     m_state.setHasExternalSideEffects();
-    Q_UNUSED(name)
-    Q_UNUSED(argc)
-    Q_UNUSED(argv)
-    INSTR_PROLOGUE_NOT_IMPLEMENTED_POPULATES_ACC();
+
+    QQmlJSMetaMethod method;
+    method.setIsJavaScriptFunction(true);
+    method.setMethodName(u"function"_s);
+    method.setMethodType(QQmlJSMetaMethod::MethodType::Method);
+    setAccumulator(m_typeResolver->returnType(method, jsValueType, callee));
 }
 
 void QQmlJSTypePropagator::generate_CallWithReceiver(int name, int thisObject, int argc, int argv)
