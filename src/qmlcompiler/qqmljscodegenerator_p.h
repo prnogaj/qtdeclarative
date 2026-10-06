@@ -368,7 +368,8 @@ private:
     QString contextLocalDeclaration(const QQmlJSScope::ConstPtr &type, const QString &name) const;
     bool isContextLocalTracked(const QQmlJSScope::ConstPtr &type) const;
     QList<int> ownContextLocals() const;
-    bool usesRealContexts() const;
+    bool isRealContext(int scope) const;
+    int runtimeScope(int scope) const;
     void generateLoadContextLocal(int scope, int index);
     void generateStoreContextLocal(int scope, int index);
     void generateValueTypeConstruction(int argc, int argv);

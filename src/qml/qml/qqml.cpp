@@ -5,6 +5,7 @@
 #include "qqml.h"
 
 #include <private/qjsvalue_p.h>
+#include <private/qv4jscall_p.h>
 #include <private/qqmlbuiltinfunctions_p.h>
 #include <private/qqmlcomponent_p.h>
 #include <private/qqmldirdata_p.h>
@@ -1242,6 +1243,37 @@ QJSValue AOTCompiledContext::createClosure(int functionIndex) const
 {
     QV4::ExecutionEngine *v4 = engine->handle();
     return QJSValuePrivate::fromReturnedValue(QV4::Runtime::Closure::call(v4, functionIndex));
+}
+
+QJSValue AOTCompiledContext::callValueMethod(
+        const QJSValue &object, const QString &name, const QJSValue *arguments, int argc) const
+{
+    QV4::ExecutionEngine *v4 = engine->handle();
+    QV4::Scope scope(v4);
+
+    QV4::ScopedValue thisValue(scope, QJSValuePrivate::convertToReturnedValue(v4, object));
+    QV4::ScopedObject base(scope, thisValue->toObject(v4));
+    if (v4->hasException)
+        return QJSValue();
+
+    QV4::ScopedString key(scope, v4->newString(name));
+    QV4::ScopedFunctionObject function(scope, base->get(key));
+    if (v4->hasException)
+        return QJSValue();
+    if (!function) {
+        v4->throwTypeError(QStringLiteral("Property '%1' of object %2 is not a function")
+                                   .arg(name, thisValue->toQStringNoThrow()));
+        return QJSValue();
+    }
+
+    QV4::JSCallArguments jsCallData(scope, argc);
+    for (int i = 0; i < argc; ++i)
+        jsCallData.args[i] = QJSValuePrivate::convertToReturnedValue(v4, arguments[i]);
+
+    QV4::ScopedValue result(scope, function->call(thisValue, jsCallData.args, argc));
+    if (v4->hasException)
+        return QJSValue();
+    return QJSValuePrivate::fromReturnedValue(result->asReturnedValue());
 }
 
 void AOTCompiledContext::setReturnValueUndefined() const

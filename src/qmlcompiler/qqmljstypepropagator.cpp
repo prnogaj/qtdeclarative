@@ -210,6 +210,8 @@ void QQmlJSTypePropagator::generate_StoreReg(int reg)
 
     if (m_closure.registerIndex == Accumulator)
         m_closure.registerIndex = reg;
+    if (m_promiseRegister == Accumulator)
+        m_promiseRegister = reg;
 }
 
 void QQmlJSTypePropagator::generate_MoveReg(int srcReg, int destReg)
@@ -337,6 +339,8 @@ void QQmlJSTypePropagator::generate_LoadClosure(int value)
     setAccumulator(m_typeResolver->literalType(m_typeResolver->functionType()));
 
     // If the closure is stored in a register and passed to a method right away, it may be inlined.
+    if (m_closure.registerIndex != Accumulator)
+        m_previousClosure = m_closure;
     m_closure = { value, currentInstructionOffset(), Accumulator };
     if (ClosureSupport *closureSupport = m_function->closureSupport) {
         closureSupport->loadedClosures.insert(
@@ -972,7 +976,9 @@ void QQmlJSTypePropagator::generate_CallProperty(int nameIndex, int base, int ar
     if (!member.isMethod()) {
         // A QFuture is a thenable in JavaScript. Call its then() and catch() like any other
         // JavaScript function.
-        const bool isThenableCall = m_typeResolver->isFuture(baseType)
+        // then() and catch() return a promise, which has the same methods.
+        const bool isFutureCall = m_typeResolver->isFuture(baseType);
+        const bool isThenableCall = (isFutureCall || m_promiseRegister == base)
                 && (propertyName == u"then"_s || propertyName == u"catch"_s);
         if (isThenableCall
                 || callBase.contains(m_typeResolver->jsValueType())
@@ -982,6 +988,36 @@ void QQmlJSTypePropagator::generate_CallProperty(int nameIndex, int base, int ar
             for (int i = 0; i < argc; ++i)
                 addReadRegister(argv + i, jsValueType);
             m_state.setHasExternalSideEffects();
+
+            // Only the future calls a callback that is passed right here, and we know what it
+            // calls it with: its result, or an error. So the callback does not have to declare
+            // the type of its parameter.
+            if (isThenableCall && m_function->closureSupport) {
+                const bool isThen = propertyName == u"then"_s;
+                for (const LoadedClosure &closure : { m_previousClosure, m_closure }) {
+                    QQmlJSScope::ConstPtr argument;
+                    if (closure.functionIndex < 0 || closure.registerIndex < argv
+                            || closure.registerIndex >= argv + argc) {
+                        continue;
+                    } else if (isThen && closure.registerIndex == argv) {
+                        // A promise passes on whatever the previous callback has returned.
+                        argument = isFutureCall
+                                ? m_typeResolver->futureResultType(baseType)
+                                : m_typeResolver->varType();
+                    } else if (closure.registerIndex == argv + (isThen ? 1 : 0)) {
+                        argument = m_typeResolver->varType();
+                    }
+                    if (argument) {
+                        m_function->closureSupport->contextualArgumentTypes.insert(
+                                closure.functionIndex, { argument });
+                    }
+                }
+            }
+
+            if (isThenableCall) {
+                m_promiseRegister = Accumulator;
+                m_promiseCreated = true;
+            }
 
             QQmlJSMetaMethod method;
             method.setIsJavaScriptFunction(true);
@@ -2888,7 +2924,14 @@ bool QQmlJSTypePropagator::isNoop(QV4::Moth::Instr::Type instr) const
 void QQmlJSTypePropagator::endInstruction(QV4::Moth::Instr::Type instr)
 {
     if (instr != QV4::Moth::Instr::Type::LoadClosure && instr != QV4::Moth::Instr::Type::StoreReg)
-        m_closure = {};
+        m_closure = m_previousClosure = {};
+
+    // The same for the promise a then() or catch() has returned
+    if (instr != QV4::Moth::Instr::Type::LoadClosure && instr != QV4::Moth::Instr::Type::StoreReg
+            && !m_promiseCreated) {
+        m_promiseRegister = InvalidRegister;
+    }
+    m_promiseCreated = false;
 
     InstructionAnnotation &currentInstruction = m_state.annotations[currentInstructionOffset()];
     currentInstruction.changedRegister = m_state.changedRegister();

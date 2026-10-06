@@ -687,6 +687,12 @@ namespace QQmlPrivate
         void loadContextLocal(int scope, int index, QMetaType type, void *target) const;
         void storeContextLocal(int scope, int index, QMetaType type, const void *source) const;
         QJSValue createClosure(int functionIndex) const;
+
+        // Experiment: Call a method of a JavaScript object, for example then() of a thenable,
+        // with JavaScript values as arguments. An exception is left pending.
+        QJSValue callValueMethod(
+                const QJSValue &object, const QString &name, const QJSValue *arguments,
+                int argc) const;
         void setReturnValueUndefined() const;
 
         static void mark(QObject *object, QV4::MarkStack *markStack);

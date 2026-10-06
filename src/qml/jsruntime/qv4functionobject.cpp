@@ -20,6 +20,9 @@
 #include "private/qlocale_tools_p.h"
 #include "private/qqmlbuiltinfunctions_p.h"
 #include <private/qv4jscall_p.h>
+#include <private/qv4sequenceobject_p.h>
+#include <private/qqmllistwrapper_p.h>
+#include <private/qqmlmetatype_p.h>
 #include <private/qv4vme_moth_p.h>
 #include <private/qv4alloca_p.h>
 
@@ -534,6 +537,39 @@ static ReturnedValue qfoDoCall(
     return result;
 }
 
+/*!
+ * \internal
+ * Experiment: A list<T> parameter of compiled code is a QQmlListProperty. Called with a list of
+ * another kind, a JavaScript array or the QList<T *> a C++ function has returned, the conversion
+ * of the argument failed, and the compiled code got an invalid QQmlListProperty. Do what we do
+ * for typed functions that are interpreted: create a list of the declared type first. The
+ * returned values live in \a scope.
+ */
+static const Value *coerceListArguments(
+        Scope &scope, const QMetaType *types, qsizetype numTypes, const Value *argv, int argc)
+{
+    Value *coerced = nullptr;
+    for (int i = 0; i < argc && i + 1 < numTypes; ++i) {
+        const QMetaType type = types[i + 1];
+        if (!(type.flags() & QMetaType::IsQmlList))
+            continue;
+        if (!argv[i].as<ArrayObject>() && !argv[i].as<Sequence>())
+            continue;
+
+        const QQmlType qmlType = QQmlMetaType::qmlListType(type);
+        if (!qmlType.isValid())
+            continue;
+
+        if (!coerced) {
+            coerced = scope.constructUndefined(argc);
+            for (int j = 0; j < argc; ++j)
+                coerced[j] = argv[j];
+        }
+        coerced[i] = coerceListType(scope.engine, argv[i], qmlType);
+    }
+    return coerced ? coerced : argv;
+}
+
 ReturnedValue ArrowFunction::virtualCall(const QV4::FunctionObject *fo, const Value *thisObject,
                                          const QV4::Value *argv, int argc)
 {
@@ -542,6 +578,8 @@ ReturnedValue ArrowFunction::virtualCall(const QV4::FunctionObject *fo, const Va
     switch (function->kind) {
     case Function::AotCompiled: {
         const auto &types = function->aotCompiledFunction.types;
+        Scope scope(fo->engine());
+        argv = coerceListArguments(scope, types.data(), types.length(), argv, argc);
         return QV4::convertAndCall(
                     fo->engine(), types.data(), types.length(), argv, argc,
                     [fo, thisObject](void **a, const QMetaType *types, int argc) {

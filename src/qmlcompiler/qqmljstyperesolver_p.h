@@ -167,6 +167,7 @@ public:
 
     bool isNumeric(QQmlJSRegisterContent type) const;
     bool isFuture(const QQmlJSScope::ConstPtr &type) const;
+    QQmlJSScope::ConstPtr futureResultType(const QQmlJSScope::ConstPtr &type) const;
     bool isNumeric(const QQmlJSScope::ConstPtr &type) const;
 
     bool isIntegral(QQmlJSRegisterContent type) const;
