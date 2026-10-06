@@ -57,6 +57,13 @@ struct QJSList : private QJSListIndexClamp
         m_list->resize(size);
     }
 
+    // Returns the new size.
+    qsizetype push(const Value &value)
+    {
+        m_list->append(value);
+        return m_list->size();
+    }
+
     bool includes(const Value &value) const
     {
         return std::find(m_list->cbegin(), m_list->cend(), value) != m_list->cend();
@@ -187,6 +194,16 @@ struct QJSList<QQmlListProperty<QObject>, QObject *>  : private QJSListIndexClam
                 m_list->removeLast(m_list);
             } while (--current > size);
         }
+    }
+
+    // Returns the new size, or -1 if the list cannot be appended to.
+    qsizetype push(QObject *value)
+    {
+        if (!m_list->append || !m_list->count)
+            return -1;
+
+        m_list->append(m_list, value);
+        return m_list->count(m_list);
     }
 
     bool includes(const QObject *value) const

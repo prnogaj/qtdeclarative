@@ -72,6 +72,7 @@ private slots:
     void array();
     void arrayCtor();
     void asCast();
+    void assignListPropertyToCppList();
     void attachedBaseEnum();
     void attachedSelf();
     void attachedType();
@@ -92,6 +93,13 @@ private slots:
     void callObjectLookupOnNull();
     void callWithSpread();
     void collectGarbageDuringAotCode();
+    void closureArrayMethods();
+    void closureCapturedObjects();
+    void closureForEach();
+    void closureForEachFallback();
+    void closureForEachGc();
+    void closureForEachThrow();
+    void closureNested();
     void collectGarbageAfterAotCodeReturned();
     void colorAsVariant();
     void colorString();
@@ -125,6 +133,7 @@ private slots:
     void destroyAndToString();
     void detachOnAssignment();
     void detachedListAssignment();
+    void detachedValues();
     void detachedReferences();
     void dialogButtonBox();
     void disappearingArrowFunction();
@@ -156,6 +165,7 @@ private slots:
     void finalProperty();
     void flagEnum();
     void flushBeforeCapture();
+    void forOfList();
     void fromBoolValue();
     void funcWithParams();
     void functionArguments();
@@ -214,6 +224,7 @@ private slots:
     void listOfInvisible();
     void listOfInlineComponent();
     void listPropertyAsModel();
+    void listPropertyPush();
     void listToString();
     void lotsOfRegisters();
     void math();
@@ -280,6 +291,7 @@ private slots:
     void scopeObjectDestruction();
     void scopeVsObject();
     void scopedEnum();
+    void sequencePush();
     void sequenceToIterable();
     void setLookupConversion();
     void setLookupOriginalScope();
@@ -326,6 +338,7 @@ private slots:
     void valueTypeArgument();
     void valueTypeBehavior();
     void valueTypeConstructorArguments();
+    void valueTypeFactories();
     void valueTypeLists();
     void valueTypeProperty();
     void variantMapLookup();
@@ -3986,6 +3999,452 @@ void tst_QmlCppCodegen::listPropertyAsModel()
     QCOMPARE(children.count(), 5);
 }
 
+void tst_QmlCppCodegen::detachedValues()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/detachedValues.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    double result = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "rectAfterSideEffect", Q_RETURN_ARG(double, result),
+            Q_ARG(QRectF, QRectF(1, 2, 3, 4))));
+    QCOMPARE(result, 4.0);
+    QCOMPARE(o->property("counter").toInt(), 1);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "listAfterSideEffect", Q_RETURN_ARG(double, result),
+            Q_ARG(QList<double>, QList<double>({ 1.5, 2.5, 4 }))));
+    QCOMPARE(result, 8.0);
+    QCOMPARE(o->property("counter").toInt(), 4);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "partAfterSideEffect", Q_RETURN_ARG(double, result),
+            Q_ARG(QRectF, QRectF(1, 2, 3, 4))));
+    QCOMPARE(result, 5.0);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "createdAfterSideEffect", Q_RETURN_ARG(double, result), Q_ARG(double, 1.5)));
+    QCOMPARE(result, 5.5);
+    QCOMPARE(o->property("counter").toInt(), 6);
+}
+
+void tst_QmlCppCodegen::assignListPropertyToCppList()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/assignListPropertyToCppList.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    BirthdayParty *party = o->property("party").value<BirthdayParty *>();
+    QVERIFY(party);
+    QCOMPARE(party->guestCount(), 0);
+
+    // Assigning a list property replaces the contents of the other one.
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "assignPeople"));
+    QCOMPARE(party->guestCount(), 2);
+    QCOMPARE(party->guest(0)->name(), u"a"_s);
+    QCOMPARE(party->guest(1)->name(), u"b"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "assignPeople"));
+    QCOMPARE(party->guestCount(), 2);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "assignOthers"));
+    QCOMPARE(party->guestCount(), 1);
+    QCOMPARE(party->guest(0)->name(), u"c"_s);
+}
+
+void tst_QmlCppCodegen::forOfList()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/forOfList.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    double result = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumUpTo", Q_RETURN_ARG(double, result), Q_ARG(double, 3.0)));
+    QCOMPARE(result, 4.0);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumUpTo", Q_RETURN_ARG(double, result), Q_ARG(double, 10.0)));
+    QCOMPARE(result, 8.0);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumOfArgument", Q_RETURN_ARG(double, result),
+            Q_ARG(QList<double>, QList<double>({ 1, 2, 3.5 }))));
+    QCOMPARE(result, 6.5);
+    QCOMPARE(o->property("last").toDouble(), 3.5);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumOfArgument", Q_RETURN_ARG(double, result),
+            Q_ARG(QList<double>, QList<double>())));
+    QCOMPARE(result, 0.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "collectNames"));
+    QCOMPARE(o->property("names").toString(), u"ab"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "firstAbove", Q_RETURN_ARG(double, result), Q_ARG(double, 2.0),
+            Q_ARG(bool, true)));
+    QCOMPARE(result, 2.5);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "firstAbove", Q_RETURN_ARG(double, result), Q_ARG(double, 2.0),
+            Q_ARG(bool, false)));
+    QCOMPARE(result, -1.0);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "firstAbove", Q_RETURN_ARG(double, result), Q_ARG(double, 20.0),
+            Q_ARG(bool, true)));
+    QCOMPARE(result, -1.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "nested", Q_RETURN_ARG(double, result)));
+    QCOMPARE(result, 49.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "firstTwo", Q_RETURN_ARG(double, result)));
+    QCOMPARE(result, 0.5);
+
+    // An exception thrown in the loop ends the function. The engine works afterwards.
+    QQmlExpression caught(
+            qmlContext(o.get()), o.get(),
+            u"(function() { try { throwing() } catch (e) { return 'caught ' + e } return 'none' })()"_s);
+    QCOMPARE(caught.evaluate().toString(), u"caught negative"_s);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumUpTo", Q_RETURN_ARG(double, result), Q_ARG(double, 10.0)));
+    QCOMPARE(result, 8.0);
+}
+
+void tst_QmlCppCodegen::sequencePush()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/sequencePush.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    int length = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "addNumber", Q_RETURN_ARG(int, length), Q_ARG(double, 2.5)));
+    QCOMPARE(length, 2);
+    QCOMPARE(o->property("numbers").value<QList<double>>(), QList<double>({ 1.5, 2.5 }));
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "addNames", Q_ARG(QString, u"a"_s), Q_ARG(QString, u"b"_s)));
+    QCOMPARE(o->property("names").toStringList(), QStringList({ u"a"_s, u"b"_s }));
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "addCount", Q_RETURN_ARG(int, length), Q_ARG(double, 3.0)));
+    QCOMPARE(length, 3);
+    QCOMPARE(o->property("counts").value<QList<int>>(), QList<int>({ 1, 2, 3 }));
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "addInLoop", Q_RETURN_ARG(int, length), Q_ARG(int, 3)));
+    QCOMPARE(length, 5);
+    QCOMPARE(o->property("numbers").value<QList<double>>(),
+             QList<double>({ 1.5, 2.5, 0, 1, 2 }));
+}
+
+void tst_QmlCppCodegen::closureArrayMethods()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureArrayMethods.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    const auto callBool = [&](const char *method, double argument) {
+        bool result = false;
+        [&]() {
+            QVERIFY(QMetaObject::invokeMethod(
+                    o.get(), method, Q_RETURN_ARG(bool, result), Q_ARG(double, argument)));
+        }();
+        return result;
+    };
+
+    QVERIFY(callBool("someAbove", 3));
+    QVERIFY(!callBool("someAbove", 4));
+    QVERIFY(callBool("everyAbove", 1));
+    QVERIFY(!callBool("everyAbove", 2));
+
+    QVERIFY(callBool("someCounting", 2));
+    QCOMPARE(o->property("calls").toInt(), 2);
+    QVERIFY(!callBool("someCounting", 10));
+    QCOMPARE(o->property("calls").toInt(), 3);
+
+    int index = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "indexOfFirstAbove", Q_RETURN_ARG(int, index), Q_ARG(double, 2.0)));
+    QCOMPARE(index, 1);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "indexOfFirstAbove", Q_RETURN_ARG(int, index), Q_ARG(double, 10.0)));
+    QCOMPARE(index, -1);
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "implicitUndefined", Q_RETURN_ARG(int, index)));
+    QCOMPARE(index, 1);
+
+    QList<double> reals;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "above", Q_RETURN_ARG(QList<double>, reals), Q_ARG(double, 2.0)));
+    QCOMPARE(reals, QList<double>({ 2.5, 4 }));
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "evenIndices", Q_RETURN_ARG(QList<double>, reals)));
+    QCOMPARE(reals, QList<double>({ 1.5, 4 }));
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "doubled", Q_RETURN_ARG(QList<double>, reals)));
+    QCOMPARE(reals, QList<double>({ 3, 5, 8 }));
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "scaled", Q_RETURN_ARG(QList<double>, reals), Q_ARG(double, 10.0)));
+    QCOMPARE(reals, QList<double>({ 15, 26, 42 }));
+
+    QStringList strings;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "names", Q_RETURN_ARG(QStringList, strings)));
+    QCOMPARE(strings, QStringList({ u"a"_s, u"bb"_s, u"c"_s }));
+
+    QString shortNames;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "shortNames", Q_RETURN_ARG(QString, shortNames)));
+    QCOMPARE(shortNames, u"2: a+c"_s);
+}
+
+void tst_QmlCppCodegen::closureCapturedObjects()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureCapturedObjects.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    Person *target = o->property("target").value<Person *>();
+    QVERIFY(target);
+    target->setShoeSize(5);
+
+    int integer = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "writeThroughCaptured", Q_RETURN_ARG(int, integer)));
+    QCOMPARE(target->shoeSize(), 35);
+    QCOMPARE(integer, 38);
+
+    QString string;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "namesTimesNumbers", Q_RETURN_ARG(QString, string)));
+    QCOMPARE(string, u"aaabbb"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "lastPerson", Q_RETURN_ARG(QString, string)));
+    QCOMPARE(string, u"b"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sizesViaCapturedList", Q_RETURN_ARG(int, integer)));
+    QCOMPARE(integer, 3);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "capturedArgument", Q_RETURN_ARG(QString, string),
+            Q_ARG(Person *, target)));
+    QCOMPARE(string, u"targettargettarget"_s);
+}
+
+void tst_QmlCppCodegen::closureForEach()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureForEach.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    double real = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "sum", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 8.0);
+
+    int integer = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "countAbove", Q_RETURN_ARG(int, integer), Q_ARG(double, 1.0)));
+    QCOMPARE(integer, 2);
+    QCOMPARE(o->property("last").toDouble(), 6.0);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "countAbove", Q_RETURN_ARG(int, integer), Q_ARG(double, 5.0)));
+    QCOMPARE(integer, 0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "sumOfIndices", Q_RETURN_ARG(int, integer)));
+    QCOMPARE(integer, 3);
+
+    QString string;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "names", Q_RETURN_ARG(QString, string)));
+    QCOMPARE(string, u"ab"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "noArguments", Q_RETURN_ARG(int, integer)));
+    QCOMPARE(integer, 3);
+
+}
+
+void tst_QmlCppCodegen::closureForEachFallback()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureForEachFallback.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    double real = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "withArray", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 8.0);
+
+    bool outerThis = true;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "functionWithThis", Q_RETURN_ARG(bool, outerThis)));
+    QVERIFY(!outerThis);
+
+    int count = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "functionWithArguments", Q_RETURN_ARG(int, count)));
+    QCOMPARE(count, 9);
+
+    QString names;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "capturedObject", Q_RETURN_ARG(QString, names)));
+    QCOMPARE(names, u"xxxxxx"_s);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "storedCallback", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 18.0);
+}
+
+void tst_QmlCppCodegen::closureNested()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureNested.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    double real = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "products", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 88.0);
+
+    int integer = 0;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "countPerElement", Q_RETURN_ARG(int, integer)));
+    QCOMPARE(integer, 222);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "threeLevels", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 968.0);
+
+    bool boolean = false;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "anyProductAbove", Q_RETURN_ARG(bool, boolean), Q_ARG(double, 39.0)));
+    QVERIFY(boolean);
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "anyProductAbove", Q_RETURN_ARG(bool, boolean), Q_ARG(double, 40.0)));
+    QVERIFY(!boolean);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "functionExpression", Q_RETURN_ARG(double, real)));
+    QCOMPARE(real, 8.0);
+
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "namedFunctionExpression", Q_RETURN_ARG(double, real), Q_ARG(double, 2.0)));
+    QCOMPARE(real, 10.0);
+    QCOMPARE(o->property("calls").toInt(), 3);
+}
+
+void tst_QmlCppCodegen::closureForEachGc()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureForEachGc.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    QVERIFY(o->property("hiddenOuter").value<QObject *>());
+    QVERIFY(o->property("hiddenInner").value<QObject *>());
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "run"));
+    QCOMPARE(o->property("gcRuns").toInt(), 4);
+
+    // Objects the garbage collector has found unreachable are deleted now.
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+
+    // The garbage collector ran while the callback was running. The registers of the callback
+    // were the tracked locals of the stack frame then. Both objects have to be alive.
+    QObject *outer = o->property("keptOuter").value<QObject *>();
+    QVERIFY(outer);
+    QCOMPARE(outer->objectName(), u"dynamic"_s);
+
+    QObject *inner = o->property("keptInner").value<QObject *>();
+    QVERIFY(inner);
+    QCOMPARE(inner->objectName(), u"dynamic"_s);
+
+    // After the callback, the registers of the function are the tracked locals again.
+    engine.collectGarbage();
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCOMPARE(o->property("keptOuter").value<QObject *>(), outer);
+    QCOMPARE(o->property("keptInner").value<QObject *>(), inner);
+
+    // The same for objects that only captured variables refer to: a variable of the function,
+    // and a variable of a callback that a closure inside it captures.
+    QVERIFY(o->property("hiddenCaptured").value<QObject *>());
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "runCaptured"));
+    QCOMPARE(o->property("gcRuns").toInt(), 2);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+    QObject *captured = o->property("keptCaptured").value<QObject *>();
+    QVERIFY(captured);
+    QCOMPARE(captured->objectName(), u"dynamic"_s);
+
+    QVERIFY(o->property("hiddenNested").value<QObject *>());
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "runNested"));
+    QCOMPARE(o->property("gcRuns").toInt(), 9);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    QCoreApplication::processEvents();
+    QObject *nested = o->property("keptNested").value<QObject *>();
+    QVERIFY(nested);
+    QCOMPARE(nested->objectName(), u"dynamic"_s);
+}
+
+void tst_QmlCppCodegen::closureForEachThrow()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureForEachThrow.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    // An exception thrown in the callback ends the iteration and the function, and can be
+    // caught by the caller.
+    QQmlExpression caught(
+            qmlContext(o.get()), o.get(),
+            u"(function() { try { run() } catch (e) { return 'caught ' + e } return 'none' })()"_s);
+    QCOMPARE(caught.evaluate().toString(), u"caught ouch"_s);
+    QVERIFY2(!caught.hasError(), qPrintable(caught.error().toString()));
+    QCOMPARE(o->property("visited").toInt(), 2);
+    QCOMPARE(o->property("completed").toInt(), 1);
+    QVERIFY(!o->property("after").toBool());
+
+    // The engine is in a sane state afterwards: The same again, uncaught.
+    o->setProperty("visited", 0);
+    o->setProperty("completed", 0);
+    QQmlExpression uncaught(qmlContext(o.get()), o.get(), u"run()"_s);
+    uncaught.evaluate();
+    QVERIFY(uncaught.hasError());
+    QCOMPARE(uncaught.error().description(), u"ouch"_s);
+
+    // The error is reported for the line of the forEach() call, not for the line of the throw
+    // statement, as the stack frame is the one of the outer function.
+    QCOMPARE(uncaught.error().line(), 14);
+    QCOMPARE(o->property("visited").toInt(), 2);
+    QCOMPARE(o->property("completed").toInt(), 1);
+    QVERIFY(!o->property("after").toBool());
+}
+
+void tst_QmlCppCodegen::listPropertyPush()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/listPropertyPush.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    QCOMPARE(o->property("lengthAfterOne").toInt(), 1);
+    QCOMPARE(o->property("lengthAfterThree").toInt(), 3);
+
+    QQmlListReference objects(o.get(), "objects");
+    QCOMPARE(objects.count(), 3);
+    QCOMPARE(objects.at(0), o->property("a").value<QObject *>());
+    QCOMPARE(objects.at(1), o->property("b").value<QObject *>());
+    QCOMPARE(objects.at(2), nullptr);
+}
+
 void tst_QmlCppCodegen::listToString()
 {
     QQmlEngine engine;
@@ -6500,6 +6959,32 @@ void tst_QmlCppCodegen::valueTypeConstructorArguments()
     QCOMPARE(o->property("m").value<QMatrix4x4>(),
              QMatrix4x4(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16));
     QCOMPARE(o->property("fromInts").value<QVector3D>(), QVector3D(5, 6, 7));
+}
+
+void tst_QmlCppCodegen::valueTypeFactories()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/valueTypeFactories.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    QCOMPARE(o->property("v2").value<QVector2D>(), QVector2D(1, 2));
+    QCOMPARE(o->property("v3").value<QVector3D>(), QVector3D(1, 2, 3));
+    QCOMPARE(o->property("v4").value<QVector4D>(), QVector4D(1, 2, 3, 4));
+    QCOMPARE(o->property("q").value<QQuaternion>(), QQuaternion(1, 2, 3, 4));
+    QCOMPARE(o->property("m").value<QMatrix4x4>(),
+             QMatrix4x4(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16));
+
+    double sum = 0;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumOfComponents", Q_RETURN_ARG(double, sum), Q_ARG(double, 1.5)));
+    QCOMPARE(sum, 6.5);
+
+    QVector3D made;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "make", Q_RETURN_ARG(QVector3D, made), Q_ARG(double, 1.5), Q_ARG(int, 2)));
+    QCOMPARE(made, QVector3D(1.5, 2, 0.5));
 }
 
 void tst_QmlCppCodegen::valueTypeLists()

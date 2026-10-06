@@ -99,8 +99,92 @@ public:
         InstructionAnnotations annotations;
     };
 
+    struct Function;
+
+    // What the passes of a function and of the closures inlined into it share.
+    //
+    // A closure that is passed directly to a method we generate inline code for is compiled
+    // into a C++ lambda inside the function that creates it. The variables it captures are
+    // locals of the call contexts of the functions around it. They are C++ variables, declared
+    // where the context is created: in the function body, or in the lambda of a closure that
+    // needs a context of its own because its variables are captured in turn.
+    struct ClosureSupport
+    {
+        struct Closure
+        {
+            // Types of the arguments the closure is called with
+            QList<QQmlJSRegisterContent> argumentTypes;
+
+            // What the caller converts the result to (void if it ignores it), or what the
+            // closure returns if the caller takes whatever that is.
+            QQmlJSScope::ConstPtr returnType;
+
+            // Filled in before the code for the outer function is generated
+            QList<QQmlJSScope::ConstPtr> argumentStorage;
+            QQmlJSScope::ConstPtr returnStorage;
+            QString code;
+            QStringList includes;
+        };
+
+        virtual ~ClosureSupport() = default;
+
+        // Run the type propagation on the closure with the given index, as it would be called
+        // with the given arguments. This may change localTypes. If returnType is null, the
+        // return type is inferred from what the closure returns. Either way, it is stored in
+        // closures afterwards.
+        virtual bool analyzeClosure(
+                int functionIndex, const Function *outer,
+                const QList<QQmlJSRegisterContent> &argumentTypes,
+                const QQmlJSScope::ConstPtr &returnType) = 0;
+
+        // A local of a JavaScript context: the context and the index in it
+        using Local = std::pair<const void *, int>;
+
+        // The name of the C++ variable that holds the local
+        QString localName(const Local &local)
+        {
+            auto it = contextNumbers.find(local.first);
+            if (it == contextNumbers.end())
+                it = contextNumbers.insert(local.first, contextNumbers.size());
+            return QStringLiteral("c%1_local%2").arg(*it).arg(local.second);
+        }
+
+        // Contained types of the locals of the call contexts
+        QHash<Local, QQmlJSScope::ConstPtr> localTypes;
+        bool localTypesChanged = false;
+        QHash<const void *, int> contextNumbers;
+
+        // Closures to be inlined, by function index
+        QHash<int, Closure> closures;
+
+        // LoadClosure instructions whose result is only used for inlining:
+        // (identity of the function, instruction offset) -> function index of the closure
+        QHash<std::pair<const void *, int>, int> inlinedLoads;
+
+        // The same for the instructions that call the closure
+        QHash<std::pair<const void *, int>, int> inlinedCalls;
+    };
+
     struct Function
     {
+        ClosureSupport *closureSupport = nullptr;
+        const void *identity = nullptr;
+        bool isInlinedClosure = false;
+
+        // The JavaScript contexts the function runs in, innermost first. The first one is
+        // the function's own if ownsContext is set. Otherwise the function has none, and the
+        // list starts with the context of the function around it.
+        QList<const void *> contextChain;
+        bool ownsContext = false;
+
+        // If the arguments are captured by a closure, they are locals of the function's own
+        // context, too, starting at this index.
+        int firstArgumentLocal = -1;
+
+        // If set, the function has no return type yet. The type propagator merges the types of
+        // all returned values into this.
+        QQmlJSScope::ConstPtr *inferredReturnType = nullptr;
+
         QQmlJSScopesById addressableScopes;
         QList<QQmlJSRegisterContent> argumentTypes;
         QList<QQmlJSRegisterContent> registerTypes;

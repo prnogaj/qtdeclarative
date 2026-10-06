@@ -361,6 +361,18 @@ private:
             const QString &initMethodTemplate, QString *outVar);
 
     QString castTargetName(const QQmlJSScope::ConstPtr &type) const;
+    QQmlJSScope::ConstPtr contextLocalType(int scope, int index) const;
+    QString contextLocalName(int scope, int index) const;
+    QQmlJSScope::ConstPtr contextLocalStorage(const QQmlJSScope::ConstPtr &type) const;
+    QQmlJSRegisterContent contextLocalContent(const QQmlJSScope::ConstPtr &type);
+    QString contextLocalDeclaration(const QQmlJSScope::ConstPtr &type, const QString &name) const;
+    bool isContextLocalTracked(const QQmlJSScope::ConstPtr &type) const;
+    QList<int> ownContextLocals() const;
+    void generateLoadContextLocal(int scope, int index);
+    void generateStoreContextLocal(int scope, int index);
+    void generateValueTypeConstruction(int argc, int argv);
+    bool inlineArrayCallback(
+            const QString &name, int base, const ClosureSupport::Closure &closure);
 
     bool inlineStringMethod(const QString &name, int base, int argc, int argv);
     bool inlineTranslateMethod(const QString &name, int argc, int argv);
@@ -416,6 +428,7 @@ private:
     }
 
     bool isRegisterAffectedBySideEffects(int registerIndex);
+    bool isDetachedValue(QQmlJSRegisterContent content) const;
 
     // map from instruction offset to sequential label number
     QHash<int, QString> m_labels;

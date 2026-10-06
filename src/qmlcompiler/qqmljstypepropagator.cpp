@@ -31,19 +31,31 @@ QQmlJSCompilePass::BlocksAndAnnotations QQmlJSTypePropagator::run(const Function
     m_function = function;
     m_returnType = m_function->returnType;
 
+    // A closure analyzed while its outer function is being propagated shares the transaction
+    // and the merge cache of the outer function.
+    const bool isNested = m_function->isInlinedClosure && m_logger->isInTransaction();
+
     // We are the only pass that merges register contents. See QQmlJSTypeResolver::m_mergeCache.
-    m_typeResolver->clearMergeCache();
+    if (!isNested)
+        m_typeResolver->clearMergeCache();
 
     // We cannot assume anything about how a script string will be used
     if (m_returnType.containedType() == m_typeResolver->qQmlScriptStringType())
         return {};
 
+    const QQmlJSLogger::PendingState outerPending = m_logger->pendingState();
+
     do {
         // Reset the error if we need to do another pass
-        if (m_state.needsMorePasses)
-            m_logger->rollback();
+        if (m_state.needsMorePasses) {
+            if (isNested)
+                m_logger->restorePendingState(outerPending);
+            else
+                m_logger->rollback();
+        }
 
-        m_logger->startTransaction();
+        if (!isNested)
+            m_logger->startTransaction();
 
         m_prevStateAnnotations = m_state.annotations;
         m_state = PassState();
@@ -58,7 +70,8 @@ QQmlJSCompilePass::BlocksAndAnnotations QQmlJSTypePropagator::run(const Function
         // This means that we won't start over for the same reason again.
     } while (m_state.needsMorePasses);
 
-    m_logger->commit();
+    if (!isNested)
+        m_logger->commit();
     return { std::move(m_basicBlocks), std::move(m_state.annotations) };
 }
 
@@ -78,6 +91,33 @@ QQmlJSCompilePass::BlocksAndAnnotations QQmlJSTypePropagator::run(const Function
 
 void QQmlJSTypePropagator::generate_Ret()
 {
+    if (m_function->isInlinedClosure) {
+        const QQmlJSRegisterContent in = m_state.accumulatorIn();
+        if (QQmlJSScope::ConstPtr *inferred = m_function->inferredReturnType) {
+            // The caller takes whatever we return.
+            const QQmlJSScope::ConstPtr contained = in.containedType();
+            *inferred = *inferred ? m_typeResolver->merge(*inferred, contained) : contained;
+            m_state.addReadAccumulator(in);
+        } else if (m_returnType.contains(m_typeResolver->voidType())) {
+            // The caller ignores what we return.
+            m_state.addReadAccumulator(in);
+        } else if (in.contains(m_typeResolver->voidType())) {
+            // You can always return undefined.
+            m_state.addReadAccumulator(in);
+        } else if (in.contains(m_returnType.containedType())) {
+            addReadAccumulator(m_returnType);
+        } else {
+            // We don't know that the conversion in C++ does what the coercion in JavaScript does.
+            addError(u"callback returns %1 where %2 is expected"_s.arg(
+                    in.descriptiveName(), m_returnType.descriptiveName()));
+            return;
+        }
+
+        m_state.setHasInternalSideEffects();
+        m_state.skipInstructionsUntilNextJumpTarget = true;
+        return;
+    }
+
     if (m_function->isSignalHandler) {
         // Signal handlers cannot return anything.
     } else if (m_state.accumulatorIn().contains(m_typeResolver->voidType())) {
@@ -167,6 +207,9 @@ void QQmlJSTypePropagator::generate_StoreReg(int reg)
     m_state.setIsRename(true);
     m_state.addReadAccumulator(m_state.accumulatorIn());
     m_state.setRegister(reg, m_state.accumulatorIn());
+
+    if (m_closure.registerIndex == Accumulator)
+        m_closure.registerIndex = reg;
 }
 
 void QQmlJSTypePropagator::generate_MoveReg(int srcReg, int destReg)
@@ -185,40 +228,93 @@ void QQmlJSTypePropagator::generate_LoadImport(int index)
     INSTR_PROLOGUE_NOT_IMPLEMENTED_POPULATES_ACC();
 }
 
+void QQmlJSTypePropagator::loadContextLocal(int scope, int index)
+{
+    // We only know the locals of the contexts of a function whose closures we inline, and of
+    // those closures. See QQmlJSCompilePass::ClosureSupport.
+    ClosureSupport *closureSupport = m_function->closureSupport;
+    if (closureSupport && scope < m_function->contextChain.size()) {
+        const ClosureSupport::Local local { m_function->contextChain[scope], index };
+        if (const QQmlJSScope::ConstPtr type = closureSupport->localTypes.value(local)) {
+            setAccumulator(m_pool->createType(
+                    type, QQmlJSRegisterContent::InvalidLookupIndex,
+                    QQmlJSRegisterContent::Operation));
+            return;
+        }
+    }
+
+    addError(u"Cannot determine the type of local %1 in JavaScript context %2"_s
+                     .arg(index).arg(scope));
+    setVarAccumulatorAndError();
+}
+
+bool QQmlJSTypePropagator::mergeContextLocal(
+        const ClosureSupport::Local &local, const QQmlJSScope::ConstPtr &type)
+{
+    ClosureSupport *closureSupport = m_function->closureSupport;
+    QQmlJSScope::ConstPtr &known = closureSupport->localTypes[local];
+    const QQmlJSScope::ConstPtr merged = known ? m_typeResolver->merge(known, type) : type;
+
+    // The locals are kept in C++ variables. We can do that for numbers, booleans and strings,
+    // for objects, which the code generator makes known to the garbage collector, and for
+    // lists of objects, which are backed by a property. A value type or a list of values would
+    // have to refer back to where it came from, and a JavaScript object or array cannot be
+    // held in a C++ variable at all.
+    if (!m_typeResolver->isNumeric(merged)
+            && merged != m_typeResolver->boolType()
+            && merged != m_typeResolver->stringType()
+            && !merged->isReferenceType()
+            && !merged->isListProperty()) {
+        if (!known)
+            closureSupport->localTypes.remove(local);
+        return false;
+    }
+
+    if (known != merged) {
+        known = merged;
+        closureSupport->localTypesChanged = true;
+    }
+    return true;
+}
+
+void QQmlJSTypePropagator::storeContextLocal(int scope, int index)
+{
+    if (!m_function->closureSupport || scope >= m_function->contextChain.size()) {
+        addError(u"Cannot store local %1 in unknown JavaScript context %2"_s
+                         .arg(index).arg(scope));
+        return;
+    }
+
+    const ClosureSupport::Local local { m_function->contextChain[scope], index };
+    const QQmlJSScope::ConstPtr in = m_state.accumulatorIn().containedType();
+    if (!mergeContextLocal(local, in)) {
+        addError(u"Cannot store a value of type %1 in a local of a JavaScript context"_s.arg(
+                in->internalName()));
+        return;
+    }
+
+    addReadAccumulator(m_function->closureSupport->localTypes.value(local));
+    m_state.setHasInternalSideEffects();
+}
+
 void QQmlJSTypePropagator::generate_LoadLocal(int index)
 {
-    // TODO: In order to accurately track locals we'd need to track JavaScript contexts first.
-    //       This could be done by populating the initial JS context and implementing the various
-    //       Push and Pop operations. For now, this is pretty barren.
-
-    QQmlJSMetaProperty local;
-    local.setType(m_typeResolver->jsValueType());
-    local.setIndex(index);
-
-    setAccumulator(m_pool->createProperty(
-            local, QQmlJSRegisterContent::InvalidLookupIndex,
-            QQmlJSRegisterContent::InvalidLookupIndex,
-            QQmlJSRegisterContent::Property, QQmlJSRegisterContent()));
+    loadContextLocal(0, index);
 }
 
 void QQmlJSTypePropagator::generate_StoreLocal(int index)
 {
-    Q_UNUSED(index)
-    INSTR_PROLOGUE_NOT_IMPLEMENTED();
+    storeContextLocal(0, index);
 }
 
 void QQmlJSTypePropagator::generate_LoadScopedLocal(int scope, int index)
 {
-    Q_UNUSED(scope)
-    Q_UNUSED(index)
-    INSTR_PROLOGUE_NOT_IMPLEMENTED_POPULATES_ACC();
+    loadContextLocal(scope, index);
 }
 
 void QQmlJSTypePropagator::generate_StoreScopedLocal(int scope, int index)
 {
-    Q_UNUSED(scope)
-    Q_UNUSED(index)
-    INSTR_PROLOGUE_NOT_IMPLEMENTED();
+    storeContextLocal(scope, index);
 }
 
 void QQmlJSTypePropagator::generate_LoadRuntimeString(int stringId)
@@ -239,6 +335,9 @@ void QQmlJSTypePropagator::generate_LoadClosure(int value)
     // TODO: Check the function at index and see whether it's a generator to return another type
     // instead.
     setAccumulator(m_typeResolver->literalType(m_typeResolver->functionType()));
+
+    // If the closure is stored in a register and passed to a method right away, it may be inlined.
+    m_closure = { value, currentInstructionOffset(), Accumulator };
 }
 
 void QQmlJSTypePropagator::generate_LoadName(int nameIndex)
@@ -913,6 +1012,12 @@ void QQmlJSTypePropagator::generate_CallProperty(int nameIndex, int base, int ar
 
     checkDeprecated(baseType, propertyName, true);
 
+    // The constructor does not need the Qt object. If we don't read it, it is not loaded.
+    if (propagatesValueTypeFactories()
+            && propagateValueTypeFactory(propertyName, member.scope(), argc, argv)) {
+        return;
+    }
+
     addReadRegister(base);
 
     if (callBase.contains(m_typeResolver->stringType())) {
@@ -1136,6 +1241,65 @@ void QQmlJSTypePropagator::addReadRegister(int index, const QQmlJSScope::ConstPt
 {
     m_state.addReadRegister(
             index, m_typeResolver->convert(m_state.registers[index].content, convertTo));
+}
+
+/*!
+ * \internal
+ * Qt.vector2d(), Qt.vector3d(), Qt.vector4d(), Qt.quaternion() and Qt.matrix4x4() are declared
+ * to return QVariant, as the Qt object lives in QtQml and the types live in QtGui. Called with
+ * numbers, they do the same as the constructor of the value type that takes those numbers. If
+ * the value type is known in this document, propagate the call as a call of that constructor.
+ * Then the result has the type of the value type.
+ */
+bool QQmlJSTypePropagator::propagateValueTypeFactory(
+        const QString &name, QQmlJSRegisterContent scope, int argc, int argv)
+{
+    static const QLatin1StringView factories[] = {
+        "vector2d"_L1, "vector3d"_L1, "vector4d"_L1, "quaternion"_L1, "matrix4x4"_L1
+    };
+    if (std::find(std::begin(factories), std::end(factories), name) == std::end(factories))
+        return false;
+
+    const QQmlJSScope::ConstPtr qtObject = scope.containedType();
+    if (!qtObject || qtObject->internalName() != u"QtObject"_s)
+        return false;
+
+    // The value type has the same name as the function that creates it.
+    const QQmlJSScope::ConstPtr valueType = m_typeResolver->typeForName(name);
+    if (!valueType || !valueType->isValueType() || !valueType->isCreatable())
+        return false;
+
+    const auto extension = valueType->extensionType();
+    const QQmlJSScope::ConstPtr constructible
+            = (extension.extensionSpecifier == QQmlJSScope::ExtensionType)
+                ? extension.scope
+                : valueType;
+
+    const QQmlJSScope::ConstPtr realType = m_typeResolver->realType();
+    QList<QQmlJSMetaMethod> constructors;
+    const auto candidates = constructible->ownMethods(constructible->internalName());
+    for (const QQmlJSMetaMethod &candidate : candidates) {
+        const auto parameters = candidate.parameters();
+        if (!candidate.isConstructor() || parameters.size() != argc)
+            continue;
+
+        if (std::all_of(parameters.begin(), parameters.end(), [&](const auto &parameter) {
+                return parameter.type() == realType;
+            })) {
+            constructors.append(candidate);
+        }
+    }
+
+    if (constructors.size() != 1)
+        return false;
+
+    for (int i = 0; i < argc; ++i) {
+        if (!m_typeResolver->isNumeric(m_state.registers[argv + i].content))
+            return false;
+    }
+
+    propagateCall(constructors, argc, argv, m_typeResolver->namedType(valueType));
+    return true;
 }
 
 void QQmlJSTypePropagator::propagateCall(
@@ -1425,6 +1589,64 @@ bool QQmlJSTypePropagator::propagateArrayMethod(
         return true;
     }
 
+    if (argc == 1 && m_closure.registerIndex == argv && m_function->closureSupport
+            && (name == u"forEach" || name == u"some" || name == u"every"
+                || name == u"findIndex" || name == u"filter" || name == u"map")) {
+        // The callback is not stored anywhere and not called after the method returns. We can
+        // compile it as part of this function. It is called with the element and the index. It
+        // cannot take the array as third argument.
+        ClosureSupport *closureSupport = m_function->closureSupport;
+        const int functionIndex = m_closure.functionIndex;
+        const QList<QQmlJSRegisterContent> arguments = {
+            m_typeResolver->namedType(elementContained),
+            m_typeResolver->namedType(m_typeResolver->int32Type())
+        };
+
+        // forEach() ignores what the callback returns, map() takes whatever it returns, and the
+        // others want a boolean.
+        QQmlJSScope::ConstPtr callbackReturnType;
+        if (name == u"forEach")
+            callbackReturnType = m_typeResolver->voidType();
+        else if (name != u"map")
+            callbackReturnType = m_typeResolver->boolType();
+
+        if (!closureSupport->analyzeClosure(
+                    functionIndex, m_function, arguments, callbackReturnType)) {
+            return false;
+        }
+
+        QQmlJSScope::ConstPtr result;
+        if (name == u"forEach") {
+            result = m_typeResolver->voidType();
+        } else if (name == u"some" || name == u"every") {
+            result = m_typeResolver->boolType();
+        } else if (name == u"findIndex") {
+            result = m_typeResolver->int32Type();
+        } else if (name == u"filter") {
+            result = baseContained->isListProperty()
+                    ? m_typeResolver->qObjectListType()
+                    : baseContained;
+        } else {
+            // A list of what the callback returns. We need a type for that.
+            const QQmlJSScope::ConstPtr mapped
+                    = closureSupport->closures.value(functionIndex).returnType;
+            if (!mapped || mapped == m_typeResolver->voidType()
+                    || m_typeResolver->storedType(mapped) != mapped || !mapped->listType()) {
+                return false;
+            }
+            result = mapped->listType();
+        }
+
+        closureSupport->inlinedLoads.insert(
+                { m_function->identity, m_closure.instructionOffset }, functionIndex);
+        closureSupport->inlinedCalls.insert(
+                { m_function->identity, currentInstructionOffset() }, functionIndex);
+
+        m_state.setHasExternalSideEffects();
+        setReturnType(result);
+        return true;
+    }
+
     if ((name == u"pop" || name == u"shift") && argc == 0) {
         m_state.setHasExternalSideEffects();
         setReturnType(elementContained);
@@ -1704,10 +1926,10 @@ void QQmlJSTypePropagator::generate_UnwindDispatch()
 
 void QQmlJSTypePropagator::generate_UnwindToLabel(int level, int offset)
 {
-    m_state.setHasInternalSideEffects();
+    // Experiment: The unwind handlers we accept do nothing. See
+    // QQmlJSCodeGenerator::generate_SetUnwindHandler(). So this is a jump.
     Q_UNUSED(level)
-    Q_UNUSED(offset)
-    INSTR_PROLOGUE_NOT_IMPLEMENTED();
+    generate_Jump(offset);
 }
 
 void QQmlJSTypePropagator::generate_DeadTemporalZoneCheck(int name)
@@ -1751,6 +1973,22 @@ void QQmlJSTypePropagator::generate_SetException()
 
 void QQmlJSTypePropagator::generate_CreateCallContext()
 {
+    // If closures capture the arguments, the new context holds copies of them as locals.
+    if (m_function->closureSupport && m_function->ownsContext
+            && m_function->firstArgumentLocal >= 0) {
+        for (qsizetype i = 0, end = m_function->argumentTypes.size(); i < end; ++i) {
+            const ClosureSupport::Local local {
+                m_function->contextChain[0], m_function->firstArgumentLocal + int(i)
+            };
+
+            // If we cannot keep it in a C++ variable, reading the local will fail.
+            if (mergeContextLocal(local, m_function->argumentTypes[i].containedType())) {
+                addReadRegister(
+                        FirstArgument + i, m_function->closureSupport->localTypes.value(local));
+            }
+        }
+    }
+
     m_state.setHasInternalSideEffects();
 }
 
@@ -2640,6 +2878,9 @@ bool QQmlJSTypePropagator::isNoop(QV4::Moth::Instr::Type instr) const
 
 void QQmlJSTypePropagator::endInstruction(QV4::Moth::Instr::Type instr)
 {
+    if (instr != QV4::Moth::Instr::Type::LoadClosure && instr != QV4::Moth::Instr::Type::StoreReg)
+        m_closure = {};
+
     InstructionAnnotation &currentInstruction = m_state.annotations[currentInstructionOffset()];
     currentInstruction.changedRegister = m_state.changedRegister();
     currentInstruction.changedRegisterIndex = m_state.changedRegisterIndex();

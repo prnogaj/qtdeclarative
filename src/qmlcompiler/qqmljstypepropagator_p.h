@@ -212,6 +212,15 @@ protected:
     virtual void propagateCall(
             const QList<QQmlJSMetaMethod> &methods, int argc, int argv,
             QQmlJSRegisterContent scope);
+    void loadContextLocal(int scope, int index);
+    void storeContextLocal(int scope, int index);
+    bool mergeContextLocal(
+            const ClosureSupport::Local &local, const QQmlJSScope::ConstPtr &type);
+    bool propagateValueTypeFactory(
+            const QString &name, QQmlJSRegisterContent scope, int argc, int argv);
+
+    // The linter reports calls as they are written in the document.
+    virtual bool propagatesValueTypeFactories() const { return true; }
     virtual void propagateTranslationMethod_SAcheck(const QString &methodName);
     bool propagateTranslationMethod(const QList<QQmlJSMetaMethod> &methods, int argc, int argv);
     void propagateStringArgCall(QQmlJSRegisterContent base, int argv);
@@ -281,6 +290,16 @@ protected:
     }
 
     QQmlJSRegisterContent m_returnType;
+
+    // The closure loaded by the previous instructions, if it has only been moved into a register
+    // since. See QQmlJSCompilePass::ClosureSupport.
+    struct LoadedClosure
+    {
+        int functionIndex = -1;
+        int instructionOffset = -1;
+        int registerIndex = InvalidRegister;
+    };
+    LoadedClosure m_closure;
 
     // Not part of the state, as the back jumps are the reason for running multiple passes
     QMultiHash<int, ExpectedRegisterState> m_jumpOriginRegisterStateByTargetInstructionOffset;

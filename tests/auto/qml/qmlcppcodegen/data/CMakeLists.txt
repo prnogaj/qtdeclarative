@@ -116,6 +116,7 @@ set(qml_files
     array.qml
     arrayCtor.qml
     asCast.qml
+    assignListPropertyToCppList.qml
     attachedBaseEnum.qml
     badSequence.qml
     basicBlocksWithBackJump.qml
@@ -134,6 +135,13 @@ set(qml_files
     childobject.qml
     aotLocalsGarbage.qml
     collector.qml
+    closureArrayMethods.qml
+    closureCapturedObjects.qml
+    closureForEach.qml
+    closureForEachFallback.qml
+    closureForEachGc.qml
+    closureForEachThrow.qml
+    closureNested.qml
     colorAsVariant.qml
     colorString.qml
     compareOriginals.qml
@@ -166,6 +174,7 @@ set(qml_files
     destroyAndToString.qml
     detachOnAssignment.qml
     detachedListAssignment.qml
+    detachedValues.qml
     detachedreferences.qml
     dialog.qml
     dialogButtonBox.qml
@@ -197,6 +206,7 @@ set(qml_files
     fallbackresettable.qml
     finalUser.qml
     flagEnum.qml
+    forOfList.qml
     fromBoolValue.qml
     funcWithParams.qml
     functionCallInitCrash.qml
@@ -246,6 +256,7 @@ set(qml_files
     listOfInlineComponent.qml
     listOfInvisible.qml
     listPropertyAsModel.qml
+    listPropertyPush.qml
     listToString.qml
     listlength.qml
     markJSValue.qml
@@ -311,6 +322,7 @@ set(qml_files
     scopedEnum.qml
     script.js
     script.mjs
+    sequencePush.qml
     sequenceToIterable.qml
     sequenceToIterable2.qml
     setLookupConversion.qml
@@ -364,6 +376,7 @@ set(qml_files
     valueTypeConstructorArguments.qml
     valueTypeCopy.qml
     valueTypeDefault.qml
+    valueTypeFactories.qml
     valueTypeLists.qml
     valueTypeProperty.qml
     valueTypeReference.qml
