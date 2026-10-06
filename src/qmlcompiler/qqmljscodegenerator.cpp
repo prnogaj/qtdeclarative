@@ -2801,6 +2801,8 @@ bool QQmlJSCodeGenerator::inlineArrayCallback(
         }
     }
 
+    // The closure has left its own position in the stack frame.
+    generateSetInstructionPointer();
     m_body += u"}\n"_s;
     return true;
 }
@@ -4282,6 +4284,18 @@ void QQmlJSCodeGenerator::endInstruction(QV4::Moth::Instr::Type)
 
 void QQmlJSCodeGenerator::generateSetInstructionPointer()
 {
+    // The code of an inlined closure runs in the stack frame of the function it is inlined
+    // into. Its instruction offsets mean nothing there. Pass the line instead, as a negative
+    // number. See CppStackFrame::lineNumber().
+    if (m_function->isInlinedClosure) {
+        const int line = currentSourceLocation().startLine;
+        if (line > 0) {
+            m_body += u"aotContext->setInstructionPointer(-"_s + QString::number(line)
+                    + u");\n"_s;
+            return;
+        }
+    }
+
     m_body += u"aotContext->setInstructionPointer("_s
         + QString::number(nextInstructionOffset()) + u");\n"_s;
 }

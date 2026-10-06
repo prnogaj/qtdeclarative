@@ -4776,14 +4776,9 @@ void tst_QmlCppCodegen::closureForEachThrow()
     QVERIFY(uncaught.hasError());
     QCOMPARE(uncaught.error().description(), u"ouch"_s);
 
-    // The error is reported for the line of the forEach() call, not for the line of the throw
-    // statement, as the stack frame is the one of the outer function. The interpreter has a
-    // stack frame for the callback and reports the line of the throw statement.
-#ifdef QT_TEST_FORCE_INTERPRETER
+    // The error is reported for the line of the throw statement, also when the callback is
+    // inlined and runs in the stack frame of the outer function.
     QCOMPARE(uncaught.error().line(), 17);
-#else
-    QCOMPARE(uncaught.error().line(), 14);
-#endif
     QCOMPARE(o->property("visited").toInt(), 2);
     QCOMPARE(o->property("completed").toInt(), 1);
     QVERIFY(!o->property("after").toBool());
