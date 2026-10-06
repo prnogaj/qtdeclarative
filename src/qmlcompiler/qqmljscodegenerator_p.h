@@ -290,6 +290,11 @@ protected:
 
     QString registerVariable(int index) const;
     QString lookupVariable(int lookupIndex) const;
+    QString listReloadCode(QQmlJSRegisterContent content, const QString &variable);
+
+    // Code that reads the list a for-of loop iterates once more, by the name of the pointer
+    // to that list
+    QHash<QString, QString> m_iteratorReloads;
     QString consumedRegisterVariable(int index) const;
     QString consumedAccumulatorVariableIn() const;
 
@@ -372,6 +377,8 @@ private:
     int runtimeScope(int scope) const;
     void generateLoadContextLocal(int scope, int index);
     void generateStoreContextLocal(int scope, int index);
+    void generateStoreContextLocal(
+            int scope, int index, const QQmlJSScope::ConstPtr &type, const QString &value);
     void generateValueTypeConstruction(int argc, int argv);
     bool inlineArrayCallback(
             const QString &name, int base, const ClosureSupport::Closure &closure);

@@ -100,6 +100,7 @@ private slots:
     void closureCapturedValues();
     void closureCapturedValuesFallback();
     void closureEscaping();
+    void liveListIteration();
     void closureEscapingFallback();
     void closureForEach();
     void closureForEachFallback();
@@ -4326,6 +4327,19 @@ void tst_QmlCppCodegen::closureCapturedValues()
     QVERIFY(QMetaObject::invokeMethod(o.get(), "scaleAll", Q_RETURN_ARG(double, result)));
     QCOMPARE(result, 12.0);
 
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "moved", Q_RETURN_ARG(double, result)));
+    QCOMPARE(result, 2.0 + 4.0 + 7.0 + 7.0);
+
+    QVariant mover;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "makeMover", Q_RETURN_ARG(QVariant, mover)));
+    QJSValue moverFunction = mover.value<QJSValue>();
+    QCOMPARE(moverFunction.call({ QJSValue(1.5) }).toNumber(), 11.5);
+    engine.collectGarbage();
+    QCOMPARE(moverFunction.call({ QJSValue(1.5) }).toNumber(), 13.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "collect", Q_RETURN_ARG(double, result)));
+    QCOMPARE(result, 18.0);
+
     QVERIFY(QMetaObject::invokeMethod(o.get(), "installScaler"));
     o->setProperty("factor", 5.0);
     QJSValue scaler = o->property("later").value<QJSValue>();
@@ -4356,10 +4370,32 @@ void tst_QmlCppCodegen::closureCapturedValuesFallback()
     o->setProperty("numbers", QVariant::fromValue(QList<double>{ 1, 2, 3, 4, 5 }));
     QCOMPARE(reader.value<QJSValue>().call().toNumber(), 5.0);
 
-    o->setProperty("numbers", QVariant::fromValue(QList<double>{ 1, 2, 3 }));
-    double result = 0;
-    QVERIFY(QMetaObject::invokeMethod(o.get(), "moved", Q_RETURN_ARG(double, result)));
-    QCOMPARE(result, 2.0 + 4.0 + 7.0);
+}
+
+void tst_QmlCppCodegen::liveListIteration()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/liveListIteration.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    // A loop over a list that is a property sees what its body does to that property, as in
+    // the interpreter. Compiled code holds a copy of the list, and reads it again as it goes.
+    const auto run = [&](const char *function) {
+        o->setProperty("log", QString());
+        o->setProperty("numbers", QVariant::fromValue(QList<double>{ 1, 2, 3, 4 }));
+        if (!QMetaObject::invokeMethod(o.get(), function))
+            return u"failed"_s;
+        return o->property("log").toString();
+    };
+
+    QCOMPARE(run("changeAhead"), u"1 2 30 40 "_s);
+    QCOMPARE(run("shrink"), u"1 2 "_s);
+    QCOMPARE(run("grow"), u"1 2 3 4 "_s);
+    QCOMPARE(run("growForOf"), u"1 2 3 4 100 200 "_s);
+    QCOMPARE(run("otherObject"), u"10 21 "_s);
+    QCOMPARE(run("copied"), u"1 2 3 4 "_s);
 }
 
 void tst_QmlCppCodegen::closureEscaping()
@@ -4769,14 +4805,9 @@ void tst_QmlCppCodegen::closureForEachThrow()
     QVERIFY(uncaught.hasError());
     QCOMPARE(uncaught.error().description(), u"ouch"_s);
 
-    // The error is reported for the line of the forEach() call, not for the line of the throw
-    // statement, as the stack frame is the one of the outer function. The interpreter has a
-    // stack frame for the callback and reports the line of the throw statement.
-#ifdef QT_TEST_FORCE_INTERPRETER
+    // The error is reported for the line of the throw statement, also when the callback is
+    // inlined and runs in the stack frame of the outer function.
     QCOMPARE(uncaught.error().line(), 17);
-#else
-    QCOMPARE(uncaught.error().line(), 14);
-#endif
     QCOMPARE(o->property("visited").toInt(), 2);
     QCOMPARE(o->property("completed").toInt(), 1);
     QVERIFY(!o->property("after").toBool());
