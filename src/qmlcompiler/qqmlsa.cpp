@@ -1648,6 +1648,9 @@ void PassManagerPrivate::analyzeWrite(const Element &element, const QString &pro
                                       const Element &value, const Element &writeScope,
                                       const QQmlSA::SourceLocation &location)
 {
+    if (m_propertyPassesSuspended)
+        return;
+
     const auto &passes = findPropertyUsePasses(element, propertyName);
     for (PropertyPass *pass : passes)
         pass->onWrite(element, propertyName, value, writeScope, location);
@@ -1656,6 +1659,9 @@ void PassManagerPrivate::analyzeWrite(const Element &element, const QString &pro
 void PassManagerPrivate::analyzeRead(const Element &element, const QString &propertyName,
                                      const Element &readScope, const QQmlSA::SourceLocation &location)
 {
+    if (m_propertyPassesSuspended)
+        return;
+
     const auto &passes = findPropertyUsePasses(element, propertyName);
     for (PropertyPass *pass : passes)
         pass->onRead(element, propertyName, readScope, location);
@@ -1664,6 +1670,9 @@ void PassManagerPrivate::analyzeRead(const Element &element, const QString &prop
 void PassManagerPrivate::analyzeCall(const Element &element, const QString &propertyName,
                                      const Element &readScope, const QQmlSA::SourceLocation &location)
 {
+    if (m_propertyPassesSuspended)
+        return;
+
     const auto &passes = findPropertyUsePasses(element, propertyName);
     for (PropertyPass *pass : passes)
         pass->onCall(element, propertyName, readScope, location);
@@ -1672,6 +1681,9 @@ void PassManagerPrivate::analyzeCall(const Element &element, const QString &prop
 void PassManagerPrivate::analyzeBinding(const Element &element, const QQmlSA::Element &value,
                                         const QQmlSA::SourceLocation &location)
 {
+    if (m_propertyPassesSuspended)
+        return;
+
     const auto it = m_bindingsByLocation.find(location.offset());
 
     // If there's no matching binding that means we're in a nested Ret somewhere inside an

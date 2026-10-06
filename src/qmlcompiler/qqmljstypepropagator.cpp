@@ -1868,7 +1868,9 @@ bool QQmlJSTypePropagator::propagateArrayMethod(
         } else if (name == u"findIndex") {
             result = m_typeResolver->int32Type();
         } else if (name == u"filter") {
-            result = baseContained->isListProperty()
+            // Generated code holds the result in a list of plain objects. Who only wants the
+            // types keeps what the elements are.
+            result = (baseContained->isListProperty() && !closureSupport->analysisOnly)
                     ? m_typeResolver->qObjectListType()
                     : baseContained;
         } else if (closureSupport->analysisOnly) {

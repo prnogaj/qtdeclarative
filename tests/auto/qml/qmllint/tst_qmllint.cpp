@@ -1431,6 +1431,21 @@ void TestQmllint::dirtyQmlCode_data()
             << QStringLiteral("jsVarDeclarationsWriteConst.qml")
             << ResultBuilder::singleExpected("Cannot assign to read-only property constProp"_L1)
             << defaultOptions;
+    // Callbacks are linted with the types of what they are called with and of the variables
+    // they capture.
+    QTest::newRow("closureMembers")
+            << QStringLiteral("closureMembers.qml")
+            << ResultBuilder()
+               .addExpected("Member \"objectNam\" not found on type \"QObject\""_L1, 12, 51)
+               .addExpected("Member \"nope\" not found on type \"double\""_L1, 13, 56)
+               .addExpected("Member \"neither\" not found on type \"int\""_L1, 13, 65)
+               .addExpected("Member \"lenght\" not found on type \"QString\""_L1, 14, 61)
+               .addExpected("Member \"inner\" not found on type \"QObject\""_L1, 16, 55)
+               .addExpected("Member \"missing\" not found on type \"closureMembers\""_L1, 22, 48)
+               .addExpected("Member \"wrong\" not found on type \"qlonglong\""_L1, 22, 64)
+               .addExpected("Member \"typo\" not found on type \"QObject\""_L1, 23, 42)
+               .build()
+            << defaultOptions;
     QTest::newRow("lintInnerFunctionsToo")
             << QStringLiteral("lintInnerFunctionsToo.qml")
             << ResultBuilder()
@@ -3184,6 +3199,8 @@ void TestQmllint::cleanQmlCode_data()
 
     QTest::newRow("2Behavior") << QStringLiteral("2behavior.qml") << defaultOptions;
     QTest::newRow("futureThen") << QStringLiteral("futureThen.qml") << defaultOptions;
+    QTest::newRow("closureMembersClean")
+            << QStringLiteral("closureMembersClean.qml") << defaultOptions;
     QTest::newRow("Accessible") << QStringLiteral("accessible.qml") << defaultOptions;
     QTest::newRow("AddressableValue") << QStringLiteral("addressableValue.qml") << defaultOptions;
     QTest::newRow("AttachedProps") << QStringLiteral("AttachedProps.qml") << defaultOptions;
@@ -4950,6 +4967,17 @@ void TestQmllint::quickPlugin()
             .addExpected("Cannot specify x for items inside Flow. Flow will not function."_L1)
             .addExpected("Cannot specify y for items inside Flow. Flow will not function."_L1)
             .build(), withQuickPlugin);
+    // Closures are analyzed several times. The passes of the plugin see them once.
+    {
+        const auto message
+                = "ToolTip attached property must be attached to an object deriving from Item"_L1;
+        runTest("pluginQuick_closures.qml",
+                ResultBuilder()
+                .addExpected(message, 12, 58)
+                .addExpected(message, 17, 62)
+                .addExpected(message, 22, 51)
+                .build(), withQuickPlugin);
+    }
     runTest("pluginQuick_attached.qml",
             ResultBuilder()
             .addExpected("ToolTip attached property must be attached to an object deriving from Item"_L1)
