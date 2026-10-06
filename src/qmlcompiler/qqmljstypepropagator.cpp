@@ -1155,6 +1155,25 @@ void QQmlJSTypePropagator::generate_CallProperty(int nameIndex, int base, int ar
     const auto baseType = callBase.containedType();
     const auto member = m_typeResolver->memberType(callBase, propertyName);
 
+    // someSignal.connect(callback): the callback is called with the arguments of the signal.
+    if (propertyName == u"connect"_s && argc == 1 && m_closure.registerIndex == argv
+            && m_function->closureSupport && callBase.isMethod()) {
+        const auto candidates = callBase.method();
+        for (const QQmlJSMetaMethod &candidate : candidates) {
+            if (candidate.methodType() != QQmlJSMetaMethodType::Signal)
+                continue;
+            QList<QQmlJSScope::ConstPtr> arguments;
+            const auto parameters = candidate.parameters();
+            for (const QQmlJSMetaParameter &parameter : parameters) {
+                const QQmlJSScope::ConstPtr type = parameter.type();
+                arguments.append(type ? type : m_typeResolver->varType());
+            }
+            m_function->closureSupport->contextualArgumentTypes.insert(
+                    m_closure.functionIndex, arguments);
+            break;
+        }
+    }
+
     if (!member.isMethod()) {
         // A QFuture is a thenable in JavaScript. Call its then() and catch() like any other
         // JavaScript function.

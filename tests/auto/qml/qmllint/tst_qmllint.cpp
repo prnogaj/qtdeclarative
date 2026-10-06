@@ -1456,6 +1456,15 @@ void TestQmllint::dirtyQmlCode_data()
                .addExpected("Member \"lenght\" not found on type \"QVector2D\""_L1, 7, 40)
                .build()
             << defaultOptions;
+    // A callback connected to a signal gets the arguments of the signal.
+    QTest::newRow("closureSignalConnect")
+            << QStringLiteral("closureSignalConnect.qml")
+            << ResultBuilder()
+               .addExpected("Member \"lenght\" not found on type \"QString\""_L1, 10, 63)
+               .addExpected("Member \"nope\" not found on type \"double\""_L1, 10, 75)
+               .addExpected("Member \"intervall\" not found on type \"Timer\""_L1, 12, 61)
+               .build()
+            << defaultOptions;
     QTest::newRow("lintInnerFunctionsToo")
             << QStringLiteral("lintInnerFunctionsToo.qml")
             << ResultBuilder()
