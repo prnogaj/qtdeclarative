@@ -307,7 +307,11 @@ protected:
     // the first of two callbacks passed to the same call.
     LoadedClosure m_previousClosure;
 
-    bool isCapturedCopy(QQmlJSRegisterContent content);
+    bool isCapturedCopy(QQmlJSRegisterContent content, bool canWriteBack = false);
+
+    // The value types and lists of values loaded from locals of contexts, with the scope and
+    // the index of the local
+    QHash<QQmlJSRegisterContent, std::pair<int, int>> m_loadedLocals;
 
     // Not part of the state, as the back jumps are the reason for running multiple passes
     QMultiHash<int, ExpectedRegisterState> m_jumpOriginRegisterStateByTargetInstructionOffset;

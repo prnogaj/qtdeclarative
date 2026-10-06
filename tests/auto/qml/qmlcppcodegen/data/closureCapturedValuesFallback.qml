@@ -17,15 +17,4 @@ QtObject {
         const list = root.numbers
         return () => list.length
     }
-
-    // A change to a captured value would be made to a copy.
-    function moved(): real {
-        const p = Qt.point(1, 2)
-        let sum = 0
-        root.numbers.forEach(n => {
-            p.x = p.x + n
-            sum += p.x
-        })
-        return sum
-    }
 }

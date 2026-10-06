@@ -770,9 +770,13 @@ void QQmlJSCodeGenerator::generateStoreContextLocal(int scope, int index)
     if (!type)
         REJECT(u"storing a local of an unknown JavaScript context"_s);
 
-    const QString value = conversion(
-            m_state.accumulatorIn(), contextLocalContent(type), consumedAccumulatorVariableIn());
+    generateStoreContextLocal(scope, index, type, conversion(
+            m_state.accumulatorIn(), contextLocalContent(type), consumedAccumulatorVariableIn()));
+}
 
+void QQmlJSCodeGenerator::generateStoreContextLocal(
+        int scope, int index, const QQmlJSScope::ConstPtr &type, const QString &value)
+{
     if (isRealContext(scope)) {
         m_body += u"{\n"_s;
         m_body += contextLocalDeclaration(type, u"local"_s) + u" = "_s + value + u";\n"_s;
@@ -1408,6 +1412,23 @@ void QQmlJSCodeGenerator::generateWriteBack(int registerIndex)
 {
     QString writeBackRegister = registerVariable(registerIndex);
     bool writeBackAffectedBySideEffects = isRegisterAffectedBySideEffects(registerIndex);
+
+    // Experiment: A copy of a variable that is shared with a closure. The variable itself is a
+    // copy, too. Store the changed value there.
+    if (const ClosureSupport *closureSupport = m_function->closureSupport) {
+        const auto local = closureSupport->localWriteBacks.constFind(
+                { m_function->identity, currentInstructionOffset() });
+        if (local != closureSupport->localWriteBacks.constEnd()) {
+            const QQmlJSScope::ConstPtr type = contextLocalType(local->first, local->second);
+            if (!type)
+                REJECT(u"write-back to a local of an unknown JavaScript context"_s);
+            generateStoreContextLocal(
+                    local->first, local->second, type,
+                    conversion(registerType(registerIndex), contextLocalContent(type),
+                               writeBackRegister));
+            return;
+        }
+    }
 
     for (QQmlJSRegisterContent writeBack = registerType(registerIndex);
          !writeBack.storedType()->isReferenceType();) {

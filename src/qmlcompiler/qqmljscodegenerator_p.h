@@ -372,6 +372,8 @@ private:
     int runtimeScope(int scope) const;
     void generateLoadContextLocal(int scope, int index);
     void generateStoreContextLocal(int scope, int index);
+    void generateStoreContextLocal(
+            int scope, int index, const QQmlJSScope::ConstPtr &type, const QString &value);
     void generateValueTypeConstruction(int argc, int argv);
     bool inlineArrayCallback(
             const QString &name, int base, const ClosureSupport::Closure &closure);
