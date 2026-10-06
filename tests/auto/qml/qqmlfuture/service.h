@@ -104,6 +104,13 @@ public:
         return QtFuture::makeReadyValueFuture(person.get());
     }
 
+    // A list of objects, as C++ holds it. QML declares that as list<Person>.
+    Q_INVOKABLE QFuture<QList<Person *>> people()
+    {
+        return QtFuture::makeReadyValueFuture(QList<Person *>{
+                new Person(QStringLiteral("Alice"), this), new Person(QStringLiteral("Bob"), this) });
+    }
+
     Q_INVOKABLE QFuture<Person *> childPerson(const QString &name)
     {
         person = new Person(name, this);

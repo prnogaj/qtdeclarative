@@ -19,6 +19,16 @@ QtObject {
     function passDirect() { service.take(service.pending()) }
     function passProperty() { service.take(service.current) }
 
+    // A callback that declares what it gets
+    property string names
+    function typedCallback() {
+        service.people().then((people: list<Person>): void => {
+            let all = ""
+            people.forEach(person => { all += person.name })
+            root.names = people.length + all
+        })
+    }
+
     function typedStore() { request = Backend.pending() }
     function typedThen() { Backend.pending().then(result => root.value = result) }
     function typedPassDirect() { Backend.take(Backend.pending()) }

@@ -75,6 +75,7 @@ private slots:
     void fromVariantMap();
     void fromSequence();
 
+    void typedCallbackGetsList();
     void compiledStore();
     void compiledThenDirect();
     void compiledThenFromBinding();
@@ -610,6 +611,16 @@ std::unique_ptr<QObject> tst_qqmlfuture::createFutureUser()
     }
     return std::unique_ptr<QObject>(component.createWithInitialProperties(
             { { QStringLiteral("service"), QVariant::fromValue(m_service.get()) } }));
+}
+
+void tst_qqmlfuture::typedCallbackGetsList()
+{
+    // The future yields a QList<Person *>. The callback declares list<Person>, which is another
+    // kind of list. It gets the objects all the same.
+    const auto user = createFutureUser();
+    QVERIFY(user);
+    QVERIFY(QMetaObject::invokeMethod(user.get(), "typedCallback"));
+    QTRY_COMPARE(user->property("names").toString(), QStringLiteral("2AliceBob"));
 }
 
 void tst_qqmlfuture::compiledStore()
