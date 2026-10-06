@@ -420,6 +420,7 @@ private slots:
     void functionInGroupedProperty();
     void signalInlineComponentArg();
     void functionSignatureEnforcement();
+    void typedArrowFunctions();
     void importPrecedence();
     void nullIsNull();
     void multiRequired();
@@ -8381,6 +8382,31 @@ void tst_qqmllanguage::functionSignatureEnforcement()
     QCOMPARE(enforced->property("m").toInt(), 77);
     QCOMPARE(enforced->property("n").toInt(), 99);
     QCOMPARE(enforced->property("o").toInt(), 77);
+}
+
+void tst_qqmllanguage::typedArrowFunctions()
+{
+    QQmlEngine engine;
+    const QUrl url = testFileUrl("typedArrowFunctions.qml");
+    QQmlComponent c(&engine, url);
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+
+    // A function with typed parameters and no declared return type returns void for now.
+    QTest::ignoreMessage(
+            QtCriticalMsg,
+            qPrintable(url.toString() + u":13: 12 should be coerced to void because the function "
+                                         "called is insufficiently annotated. The original value "
+                                         "is retained. "
+                                         "This will change in a future version of Qt."_s));
+
+    QScopedPointer<QObject> o(c.create());
+    QVERIFY(o);
+    QCOMPARE(o->property("a"), QVariant(12));
+    QCOMPARE(o->property("b"), QVariant(5));
+    QCOMPARE(o->property("c"), QVariant(4));
+    QCOMPARE(o->property("d"), QVariant(42));
+    QCOMPARE(o->property("e"), QVariant(u"12"_s));
+    QCOMPARE(o->property("f"), QVariant(u"1!2!3!"_s));
 }
 
 void tst_qqmllanguage::importPrecedence()
