@@ -290,6 +290,11 @@ protected:
 
     QString registerVariable(int index) const;
     QString lookupVariable(int lookupIndex) const;
+    QString listReloadCode(QQmlJSRegisterContent content, const QString &variable);
+
+    // Code that reads the list a for-of loop iterates once more, by the name of the pointer
+    // to that list
+    QHash<QString, QString> m_iteratorReloads;
     QString consumedRegisterVariable(int index) const;
     QString consumedAccumulatorVariableIn() const;
 
