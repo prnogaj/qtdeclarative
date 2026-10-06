@@ -4806,6 +4806,68 @@ void tst_qmlls_utils::completions_data()
             << testFile("completions/arrowSnippets.qml") << 18 << 39
             << ExpectedCompletions{ { "toFixed"_L1, CompletionItemKind::Method } }
             << QStringList{  };
+
+    // Callbacks of signals, of promises, and of lists we know nothing about
+    QTest::newRow("callback-signalHandler")
+            << testFile("completions/callbackReceivers.qml") << 11 << 15
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real, name: string): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("callback-signalConnect")
+            << testFile("completions/callbackReceivers.qml") << 14 << 29
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real, name: string): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(x: real, name: string): bool => expression"_s };
+
+    QTest::newRow("callback-signalConnectParameter")
+            << testFile("completions/callbackReceivers.qml") << 15 << 63
+            << ExpectedCompletions{ { "length"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    QTest::newRow("callback-futureThen")
+            << testFile("completions/callbackReceivers.qml") << 16 << 42
+            << ExpectedCompletions{ { "(result: Person): returnType => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("callback-promiseThen")
+            << testFile("completions/callbackReceivers.qml") << 17 << 89
+            << ExpectedCompletions{ { "(value: int): returnType => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(result: Person): returnType => expression"_s };
+
+    QTest::newRow("callback-promiseCatch")
+            << testFile("completions/callbackReceivers.qml") << 18 << 65
+            << ExpectedCompletions{ { "(error: var): returnType => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("callback-promiseFinally")
+            << testFile("completions/callbackReceivers.qml") << 19 << 67
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(error: var): returnType => expression"_s };
+
+    QTest::newRow("callback-promiseThenParameter")
+            << testFile("completions/callbackReceivers.qml") << 20 << 95
+            << ExpectedCompletions{ { "toFixed"_L1, CompletionItemKind::Method } }
+            << QStringList{  };
+
+    QTest::newRow("callback-promiseMethods")
+            << testFile("completions/callbackReceivers.qml") << 21 << 58
+            << ExpectedCompletions{ { "then"_L1, CompletionItemKind::Method },
+                                    { "catch"_L1, CompletionItemKind::Method },
+                                    { "finally"_L1, CompletionItemKind::Method } }
+            << QStringList{ u"shoeSize"_s };
+
+    QTest::newRow("callback-unknownReceiver")
+            << testFile("completions/callbackReceivers.qml") << 22 << 32
+            << ExpectedCompletions{ { "(element: var): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(element: var, index: int, array: var): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("callback-noSuchMethod")
+            << testFile("completions/callbackReceivers.qml") << 23 << 31
+            << ExpectedCompletions{ { "(parameter: type): returnType => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(element: var): void => { statements... }"_s };
 }
 
 void tst_qmlls_utils::completions()

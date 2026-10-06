@@ -1507,46 +1507,101 @@ static QQmlJSScope::ConstPtr elementTypeOfList(const QQmlJSScope::ConstPtr &type
 }
 
 namespace {
-// A call of a method that takes a callback, see QQmlJSCallbackSignatures, and what we know about
-// what it is called on.
-struct CallbackCall
+// A callback that can be passed to a method or a signal, with the types of what it is called
+// with as far as we know them. A null type is one we know nothing about.
+struct ResolvedCallback
 {
-    const QQmlJSCallbackSignatures::Signature *signature = nullptr;
-    std::shared_ptr<QQmlJSTypeResolver> resolver;
-    QQmlJSScope::ConstPtr receiver;
-    QQmlJSScope::ConstPtr element;
-    QQmlJSScope::ConstPtr futureResult;
-
-    // The type the callback receives for the given argument, or null if we don't know it
-    QQmlJSScope::ConstPtr typeOf(QQmlJSCallbackSignatures::Argument argument) const
+    struct Parameter
     {
-        switch (argument) {
-        case QQmlJSCallbackSignatures::Argument::Element:
-            return element;
-        case QQmlJSCallbackSignatures::Argument::Index:
-            return resolver->int32Type();
-        case QQmlJSCallbackSignatures::Argument::Container:
-            return receiver;
-        case QQmlJSCallbackSignatures::Argument::FutureResult:
-            return futureResult;
-        case QQmlJSCallbackSignatures::Argument::Any:
-            break;
-        }
-        return {};
-    }
+        QString name;
+        QQmlJSScope::ConstPtr type;
+    };
+    QList<Parameter> parameters;
+    qsizetype minimumParameters = 1;
+    QQmlJSCallbackSignatures::Result result = QQmlJSCallbackSignatures::Result::Any;
+    std::shared_ptr<QQmlJSTypeResolver> resolver;
+};
+
+// What is known about an expression that then(), catch() and finally() can be called on
+struct Thenable
+{
+    QQmlJSCallbackSignatures::Receiver receiver = QQmlJSCallbackSignatures::Receiver::Promise;
+
+    // The result of the future, or what the promise is resolved with, if we know
+    QQmlJSScope::ConstPtr value;
 };
 } // namespace
 
 static std::optional<ExpressionType> resolveExpressionTypeForCallback(const DomItem &item);
 
+static QString calledMethodName(const DomItem &call)
+{
+    if (call.internalKind() != DomType::ScriptCallExpression)
+        return {};
+    const DomItem callee = call.field(Fields::callee);
+    if (!isFieldMemberExpression(callee))
+        return {};
+    return callee.field(Fields::right).field(Fields::identifier).value().toString();
+}
+
 /*!
 \internal
-If \a argument is an argument of a call of a method that takes a callback there, or the place
-where the first argument of such a call is about to be written, returns the signature of that
-callback and the types it depends on.
+If \a expression is a QFuture, or the promise that then(), catch() or finally() of one returns,
+directly or down a chain of such calls, says which and what it yields.
+
+A promise from then() is resolved with what the callback returns. We know that if the callback
+declares it.
 */
-static std::optional<CallbackCall> callbackCallOf(const DomItem &argument)
+static std::optional<Thenable> thenableOf(const DomItem &expression, int depth = 0)
 {
+    if (depth > 16)
+        return {};
+
+    const auto qmlFile = expression.containingFile().ownerAs<QmlFile>();
+    if (!qmlFile || !qmlFile->typeResolver())
+        return {};
+    const auto resolver = qmlFile->typeResolver();
+
+    const QString method = calledMethodName(expression);
+    if (method == "then"_L1 || method == "catch"_L1 || method == "finally"_L1) {
+        const DomItem callee = expression.field(Fields::callee);
+        if (!thenableOf(callee.field(Fields::left), depth + 1))
+            return {};
+
+        Thenable promise;
+        const DomItem arguments = expression.field(Fields::arguments);
+        if (method == "then"_L1 && arguments.indexes() > 0) {
+            const DomItem callback = arguments.index(0);
+            if (callback.internalKind() == DomType::ScriptFunctionExpression) {
+                const DomItem returnType = callback.field(Fields::returnType);
+                const QString typeName = returnType.field(Fields::typeName).value().toString();
+                if (!typeName.isEmpty() && typeName != "void"_L1)
+                    promise.value = resolver->typeForName(typeName);
+            }
+        }
+        return promise;
+    }
+
+    const auto type = resolveExpressionTypeForCallback(expression);
+    if (!type || !type->semanticScope || !resolver->isFuture(type->semanticScope))
+        return {};
+    return Thenable{ QQmlJSCallbackSignatures::Receiver::Future,
+                     resolver->futureResultType(type->semanticScope) };
+}
+
+/*!
+\internal
+If \a argument is an argument of a call that takes a callback there, or the place where the
+first argument of such a call is about to be written, returns what we know about that callback.
+
+Signals describe their arguments themselves. For the methods of lists, futures and promises, see
+QQmlJSCallbackSignatures. If we cannot tell what a method of a list is called on, or it is a
+JavaScript array, the callback still has the usual parameters, of unknown type.
+*/
+static std::optional<ResolvedCallback> callbackOf(const DomItem &argument)
+{
+    using namespace QQmlJSCallbackSignatures;
+
     DomItem child = argument;
     DomItem call = argument;
     for (int i = 0; i < 3 && call && call.internalKind() != DomType::ScriptCallExpression; ++i) {
@@ -1568,36 +1623,97 @@ static std::optional<CallbackCall> callbackCallOf(const DomItem &argument)
     if (position < 0)
         return {};
 
-    const DomItem callee = call.field(Fields::callee);
-    if (!isFieldMemberExpression(callee))
+    const QString method = calledMethodName(call);
+    if (method.isEmpty())
         return {};
+    const DomItem left = call.field(Fields::callee).field(Fields::left);
 
     const auto qmlFile = argument.containingFile().ownerAs<QmlFile>();
     if (!qmlFile || !qmlFile->typeResolver())
         return {};
 
-    const auto base = resolveExpressionTypeForCallback(callee.field(Fields::left));
-    if (!base || !base->semanticScope)
-        return {};
-
-    CallbackCall result;
+    ResolvedCallback result;
     result.resolver = qmlFile->typeResolver();
-    result.receiver = base->semanticScope;
 
-    QQmlJSCallbackSignatures::Receiver receiver;
-    if ((result.element = elementTypeOfList(result.receiver))) {
-        receiver = QQmlJSCallbackSignatures::Receiver::List;
-    } else if (result.resolver->isFuture(result.receiver)) {
-        receiver = QQmlJSCallbackSignatures::Receiver::Future;
-        result.futureResult = result.resolver->futureResultType(result.receiver);
-    } else {
+    const auto base = resolveExpressionTypeForCallback(left);
+
+    // someObject.someSignal.connect(callback)
+    if (method == "connect"_L1) {
+        const auto signal = resolveExpressionType(left, ResolveOwnerType);
+        if (position != 0 || !signal || !signal->semanticScope || !signal->name
+                || (signal->type != SignalIdentifier
+                    && signal->type != PropertyChangedSignalIdentifier)) {
+            return {};
+        }
+        const auto signalDefinitions = signal->semanticScope->methods(*signal->name);
+        if (signalDefinitions.isEmpty())
+            return {};
+        const auto signalParameters = signalDefinitions.front().parameters();
+        for (qsizetype i = 0; i < signalParameters.size(); ++i) {
+            QString name = signalParameters[i].name();
+            if (name.isEmpty())
+                name = u"argument%1"_s.arg(i + 1);
+            result.parameters.append({ name, signalParameters[i].type() });
+        }
+        result.minimumParameters = 0;
+        result.result = Result::Ignored;
+        return result;
+    }
+
+    Receiver receiver = Receiver::List;
+    QQmlJSScope::ConstPtr container;
+    QQmlJSScope::ConstPtr element;
+    QQmlJSScope::ConstPtr value;
+    bool hasValue = true;
+
+    if (const auto thenable = thenableOf(left)) {
+        receiver = thenable->receiver;
+        value = thenable->value;
+        // A future without a result calls back with nothing. Of a promise we may just not know.
+        hasValue = value || receiver == Receiver::Promise;
+    } else if (base && base->semanticScope
+               && base->semanticScope != result.resolver->varType()
+               && base->semanticScope != result.resolver->jsValueType()) {
+        container = base->semanticScope;
+        element = elementTypeOfList(container);
+        if (!element)
+            return {};
+    } else if (base && base->type != JavaScriptIdentifier && base->type != PropertyIdentifier
+               && base->type != NotAnIdentifier) {
+        // An id, a type, an enumeration and the like have no such methods.
         return {};
     }
 
-    const QString method = callee.field(Fields::right).field(Fields::identifier).value().toString();
-    result.signature = QQmlJSCallbackSignatures::find(receiver, method, position);
-    if (!result.signature)
+    const Signature *signature = find(receiver, method, position);
+    if (!signature)
         return {};
+
+    result.minimumParameters = signature->minimumParameters;
+    result.result = signature->result;
+    for (const QQmlJSCallbackSignatures::Parameter &parameter : signature->parameters) {
+        QQmlJSScope::ConstPtr type;
+        switch (parameter.argument) {
+        case Argument::Element:
+            type = element;
+            break;
+        case Argument::Index:
+            type = result.resolver->int32Type();
+            break;
+        case Argument::Container:
+            type = container;
+            break;
+        case Argument::FutureResult:
+            if (!hasValue) {
+                result.minimumParameters = 0;
+                return result;
+            }
+            type = value;
+            break;
+        case Argument::Any:
+            break;
+        }
+        result.parameters.append({ parameter.name.toString(), type });
+    }
     return result;
 }
 
@@ -1649,17 +1765,15 @@ resolveCallbackParameterType(const DomItem &parameterDefinition, const QString &
         return {};
 
     // The function has to be passed to a method that tells us what it calls it with.
-    const auto call = callbackCallOf(functionExpression);
-    if (!call)
+    const auto callback = callbackOf(functionExpression);
+    if (!callback)
         return {};
 
     const DomItem parameters = functionExpression[Fields::parameters];
-    const auto *signatureParameter = call->signature->parameters.begin();
-    for (int i = 0; i < parameters.indexes() && i < int(call->signature->parameters.size());
-         ++i, ++signatureParameter) {
+    for (int i = 0; i < parameters.indexes() && i < callback->parameters.size(); ++i) {
         if (parameters[i][Fields::identifier].value().toString() != name)
             continue;
-        if (const QQmlJSScope::ConstPtr type = call->typeOf(signatureParameter->argument))
+        if (const QQmlJSScope::ConstPtr type = callback->parameters[i].type)
             return ExpressionType{ name, type, JavaScriptIdentifier };
         return {};
     }
@@ -1896,41 +2010,63 @@ QQmlJSCallbackSignatures.
 */
 std::optional<CallbackSignature> callbackSignatureForArgument(const DomItem &argument)
 {
-    const auto call = callbackCallOf(argument);
-    if (!call)
+    std::optional<ResolvedCallback> callback = callbackOf(argument);
+
+    // The handler of a signal, written as a function: onSomeSignal: (a, b) => ...
+    if (!callback && argument.directParent().internalKind() == DomType::ScriptExpression
+            && argument.directParent().directParent().internalKind() == DomType::Binding) {
+        const auto binding = resolveExpressionType(
+                argument.directParent().directParent(), ResolveOwnerType);
+        const auto qmlFile = argument.containingFile().ownerAs<QmlFile>();
+        if (binding && binding->type == SignalHandlerIdentifier && binding->name
+                && binding->semanticScope && qmlFile && qmlFile->typeResolver()) {
+            const auto signalName = QQmlSignalNames::handlerNameToSignalName(*binding->name);
+            const auto signalDefinitions = signalName
+                    ? binding->semanticScope->methods(*signalName) : QList<QQmlJSMetaMethod>();
+            if (!signalDefinitions.isEmpty()) {
+                callback = ResolvedCallback();
+                callback->resolver = qmlFile->typeResolver();
+                callback->minimumParameters = 0;
+                callback->result = QQmlJSCallbackSignatures::Result::Ignored;
+                const auto signalParameters = signalDefinitions.front().parameters();
+                for (qsizetype i = 0; i < signalParameters.size(); ++i) {
+                    QString name = signalParameters[i].name();
+                    if (name.isEmpty())
+                        name = u"argument%1"_s.arg(i + 1);
+                    callback->parameters.append({ name, signalParameters[i].type() });
+                }
+            }
+        }
+    }
+    if (!callback)
         return {};
 
-    // The name the type has in this document. A list is written as list<element>.
+    // The name the type has in this document. A list is written as list<element>, and what we
+    // don't know or cannot name is a var.
     const auto nameOf = [&](const QQmlJSScope::ConstPtr &type) {
         if (!type)
             return u"var"_s;
-        if (type == call->resolver->realType())
+        if (type == callback->resolver->realType())
             return u"real"_s;
-        QString name = call->resolver->nameForType(type);
+        QString name = callback->resolver->nameForType(type);
         if (!name.isEmpty() && !name.startsWith(u'$'))
             return name;
         if (const QQmlJSScope::ConstPtr element = elementTypeOfList(type)) {
-            if (element == call->resolver->realType())
+            if (element == callback->resolver->realType())
                 return u"list<real>"_s;
-            name = call->resolver->nameForType(element);
+            name = callback->resolver->nameForType(element);
             if (!name.isEmpty() && !name.startsWith(u'$'))
                 return QString(u"list<"_s + name + u'>');
         }
-        return QString();
+        return u"var"_s;
     };
 
     CallbackSignature result;
-    result.minimumParameters = call->signature->minimumParameters;
-    for (const QQmlJSCallbackSignatures::Parameter &parameter : call->signature->parameters) {
-        const QString type = nameOf(call->typeOf(parameter.argument));
-        if (type.isEmpty())
-            break;
-        result.parameters.append({ parameter.name.toString(), type });
-    }
-    if (result.parameters.size() < result.minimumParameters)
-        return {};
+    result.minimumParameters = callback->minimumParameters;
+    for (const ResolvedCallback::Parameter &parameter : std::as_const(callback->parameters))
+        result.parameters.append({ parameter.name, nameOf(parameter.type) });
 
-    switch (call->signature->result) {
+    switch (callback->result) {
     case QQmlJSCallbackSignatures::Result::Ignored:
         result.returnType = u"void"_s;
         break;
@@ -1944,6 +2080,17 @@ std::optional<CallbackSignature> callbackSignatureForArgument(const DomItem &arg
         break;
     }
     return result;
+}
+
+/*!
+\internal
+Returns whether \a expression is the promise that then(), catch() or finally() of a QFuture or
+of another such promise returns.
+*/
+bool isPromiseExpression(const DomItem &expression)
+{
+    const auto thenable = thenableOf(expression);
+    return thenable && thenable->receiver == QQmlJSCallbackSignatures::Receiver::Promise;
 }
 
 std::optional<ExpressionType> resolveExpressionType(const QQmlJS::Dom::DomItem &item,

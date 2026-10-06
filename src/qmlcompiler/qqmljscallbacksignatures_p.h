@@ -31,15 +31,16 @@ QT_BEGIN_NAMESPACE
  */
 namespace QQmlJSCallbackSignatures {
 
-// What the method is called on
-enum class Receiver { List, Future };
+// What the method is called on. A Promise is what then() and catch() of a future or of another
+// promise return.
+enum class Receiver { List, Future, Promise };
 
 // What a parameter of the callback receives, in terms of the receiver
 enum class Argument {
     Element,      // an element of the list
     Index,        // the index of that element
     Container,    // the list itself
-    FutureResult, // the result of the future
+    FutureResult, // the result of the future, or what the promise is resolved with
     Any           // something we know nothing about, for example an error or an accumulator
 };
 
@@ -87,6 +88,10 @@ inline const Signature *find(Receiver receiver, QStringView method, int callback
     static constexpr std::initializer_list<Parameter> rejected = {
         { "error"_L1, Argument::Any },
     };
+    static constexpr std::initializer_list<Parameter> resolved = {
+        { "value"_L1, Argument::FutureResult },
+    };
+    static constexpr std::initializer_list<Parameter> none = {};
 
     static const Signature signatures[] = {
         { Receiver::List, "forEach"_L1, 0, 1, visit, Result::Ignored },
@@ -103,9 +108,13 @@ inline const Signature *find(Receiver receiver, QStringView method, int callback
         { Receiver::List, "reduceRight"_L1, 0, 2, reduce, Result::Any },
         { Receiver::List, "sort"_L1, 0, 2, compare, Result::Number },
         { Receiver::List, "toSorted"_L1, 0, 2, compare, Result::Number },
-        { Receiver::Future, "then"_L1, 0, 1, fulfilled, Result::Ignored },
-        { Receiver::Future, "then"_L1, 1, 1, rejected, Result::Ignored },
+        { Receiver::Future, "then"_L1, 0, 1, fulfilled, Result::Any },
+        { Receiver::Future, "then"_L1, 1, 1, rejected, Result::Any },
         { Receiver::Future, "catch"_L1, 0, 1, rejected, Result::Ignored },
+        { Receiver::Promise, "then"_L1, 0, 1, resolved, Result::Any },
+        { Receiver::Promise, "then"_L1, 1, 1, rejected, Result::Any },
+        { Receiver::Promise, "catch"_L1, 0, 1, rejected, Result::Any },
+        { Receiver::Promise, "finally"_L1, 0, 0, none, Result::Ignored },
     };
 
     for (const Signature &signature : signatures) {

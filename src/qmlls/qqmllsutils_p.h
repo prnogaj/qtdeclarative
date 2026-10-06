@@ -293,6 +293,7 @@ struct CallbackSignature
     QString returnType;
 };
 std::optional<CallbackSignature> callbackSignatureForArgument(const DomItem &argument);
+bool isPromiseExpression(const DomItem &expression);
 bool isValidEcmaScriptIdentifier(QStringView view);
 
 std::pair<QString, QStringList> cmakeBuildCommand(const QString &path, int cmakeJobs = 0);

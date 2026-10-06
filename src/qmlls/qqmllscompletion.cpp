@@ -572,6 +572,18 @@ void QQmlLSCompletion::suggestJSExpressionCompletion(const DomItem &scriptIdenti
 
         enumerationCompletion(nearestScope, &usedNames, result);
     } else {
+        // What then() and catch() of a QFuture return is a promise. It has no type we could
+        // look up, but we know what it is.
+        if (QQmlLSUtils::isPromiseExpression(owner)) {
+            for (const QLatin1StringView name : { "then"_L1, "catch"_L1, "finally"_L1 }) {
+                CompletionItem completion;
+                completion.label = QByteArray(name.data(), name.size());
+                completion.kind = CompletionItemKind::Method;
+                result = completion;
+            }
+            return;
+        }
+
         auto ownerExpressionType = QQmlLSUtils::resolveExpressionType(
                 owner, QQmlLSUtils::ResolveActualTypeForFieldMemberExpression);
         if (!ownerExpressionType || !ownerExpressionType->semanticScope)
@@ -657,8 +669,22 @@ void QQmlLSCompletion::arrowFunctionSnippets(const DomItem &expression,
         const QByteArray body = returnsNothing ? "{ statements... }" : "expression";
         const QByteArray bodySnippet = returnsNothing ? "{\n\t$0\n}" : "$0";
 
+        const auto returnTypes = [&](qsizetype parameters) {
+            return callback->returnType.isEmpty()
+                    ? std::make_pair(QByteArray("returnType"),
+                                     QByteArray("${" + QByteArray::number(parameters + 1)
+                                                + ":returnType}"))
+                    : std::make_pair(callback->returnType.toUtf8(),
+                                     callback->returnType.toUtf8());
+        };
+
         QByteArray label = "(";
         QByteArray text = "(";
+        if (callback->minimumParameters == 0) {
+            const auto [returnType, returnSnippet] = returnTypes(0);
+            result = makeSnippet(QByteArray("(): " + returnType + " => " + body),
+                                 QByteArray("(): " + returnSnippet + " => " + bodySnippet));
+        }
         for (qsizetype i = 0; i < callback->parameters.size(); ++i) {
             const QByteArray name = callback->parameters[i].name.toUtf8();
             const QByteArray type = callback->parameters[i].type.toUtf8();
@@ -668,10 +694,7 @@ void QQmlLSCompletion::arrowFunctionSnippets(const DomItem &expression,
             if (i + 1 < callback->minimumParameters)
                 continue;
 
-            const QByteArray returnType = callback->returnType.isEmpty()
-                    ? QByteArray("returnType") : callback->returnType.toUtf8();
-            const QByteArray returnSnippet = callback->returnType.isEmpty()
-                    ? QByteArray("${" + QByteArray::number(i + 2) + ":returnType}") : returnType;
+            const auto [returnType, returnSnippet] = returnTypes(i + 1);
             result = makeSnippet(QByteArray(label + "): " + returnType + " => " + body),
                                  QByteArray(text + "): " + returnSnippet + " => " + bodySnippet));
         }
