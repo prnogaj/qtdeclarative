@@ -39,6 +39,11 @@ static const CompiledData::CodeOffsetToLineAndStatement *lineAndStatement(const 
 
 int CppStackFrame::lineNumber() const
 {
+    // Compiled code that is inlined into another function reports its line directly, as a
+    // negative number, since it has no instruction offsets in that function.
+    if (isMetaTypesFrame() && instructionPointer < 0)
+        return -instructionPointer;
+
     if (auto *line = lineAndStatement(this))
         return line->line;
     return missingLineNumber();
