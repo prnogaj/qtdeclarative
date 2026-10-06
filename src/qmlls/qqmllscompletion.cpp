@@ -563,6 +563,8 @@ void QQmlLSCompletion::suggestJSExpressionCompletion(const DomItem &scriptIdenti
                               LocalSymbolsType::Singleton | LocalSymbolsType::AttachedType,
                               CompletionItemKind::Class, result);
 
+        arrowFunctionSnippets(scriptIdentifier, result);
+
         auto scope = scriptIdentifier.nearestSemanticScope();
         if (!scope)
             return;
@@ -638,6 +640,47 @@ void QQmlLSCompletion::suggestJSExpressionCompletion(const DomItem &scriptIdenti
         methodCompletion(globals, &usedNames, result);
         propertyCompletion(globals, &usedNames, result);
     }
+}
+
+/*!
+\internal
+Suggests arrow functions with type annotations where an expression is expected. As the callback
+of a method that tells us what it calls it with, the parameter gets that type.
+*/
+void QQmlLSCompletion::arrowFunctionSnippets(const DomItem &expression,
+                                             BackInsertIterator result) const
+{
+    // Where we know what the callback is called with, write its signature: one snippet for
+    // each number of parameters it may take.
+    if (const auto callback = QQmlLSUtils::callbackSignatureForArgument(expression)) {
+        const bool returnsNothing = callback->returnType == "void"_L1;
+        const QByteArray body = returnsNothing ? "{ statements... }" : "expression";
+        const QByteArray bodySnippet = returnsNothing ? "{\n\t$0\n}" : "$0";
+
+        QByteArray label = "(";
+        QByteArray text = "(";
+        for (qsizetype i = 0; i < callback->parameters.size(); ++i) {
+            const QByteArray name = callback->parameters[i].name.toUtf8();
+            const QByteArray type = callback->parameters[i].type.toUtf8();
+            const QByteArray separator = i == 0 ? "" : ", ";
+            label += separator + name + ": " + type;
+            text += separator + "${" + QByteArray::number(i + 1) + ':' + name + "}: " + type;
+            if (i + 1 < callback->minimumParameters)
+                continue;
+
+            const QByteArray returnType = callback->returnType.isEmpty()
+                    ? QByteArray("returnType") : callback->returnType.toUtf8();
+            const QByteArray returnSnippet = callback->returnType.isEmpty()
+                    ? QByteArray("${" + QByteArray::number(i + 2) + ":returnType}") : returnType;
+            result = makeSnippet(QByteArray(label + "): " + returnType + " => " + body),
+                                 QByteArray(text + "): " + returnSnippet + " => " + bodySnippet));
+        }
+    }
+
+    result = makeSnippet("(parameter: type): returnType => expression",
+                         "(${1:parameter}: ${2:type}): ${3:returnType} => $0");
+    result = makeSnippet("(parameter: type): returnType => { statements... }",
+                         "(${1:parameter}: ${2:type}): ${3:returnType} => {\n\t$0\n}");
 }
 
 static const QQmlJSScope *resolve(const QQmlJSScope *current, const QStringList &names)

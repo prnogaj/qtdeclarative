@@ -4757,6 +4757,55 @@ void tst_qmlls_utils::completions_data()
             << ExpectedCompletions{ { "then"_L1, CompletionItemKind::Method },
                                     { "catch"_L1, CompletionItemKind::Method } }
             << QStringList{ u"shoeSize"_s };
+
+    // Arrow functions with type annotations as snippets, with the signature of the callback
+    // where the method that takes it tells us. See QQmlJSCallbackSignatures.
+    QTest::newRow("arrowSnippet-forEach")
+            << testFile("completions/arrowSnippets.qml") << 11 << 31
+            << ExpectedCompletions{ { "(element: QtObject): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(element: QtObject, index: int): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(element: QtObject, index: int, array: list<QtObject>): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(parameter: type): returnType => expression"_L1, CompletionItemKind::Snippet },
+                                    { "(parameter: type): returnType => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(element: QtObject): bool => expression"_s };
+
+    QTest::newRow("arrowSnippet-filter")
+            << testFile("completions/arrowSnippets.qml") << 12 << 30
+            << ExpectedCompletions{ { "(element: real): bool => expression"_L1, CompletionItemKind::Snippet },
+                                    { "(element: real, index: int, array: list<real>): bool => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(element: real): void => { statements... }"_s };
+
+    QTest::newRow("arrowSnippet-map")
+            << testFile("completions/arrowSnippets.qml") << 13 << 27
+            << ExpectedCompletions{ { "(element: real): returnType => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("arrowSnippet-reduce")
+            << testFile("completions/arrowSnippets.qml") << 14 << 30
+            << ExpectedCompletions{ { "(accumulator: var, element: real): returnType => expression"_L1, CompletionItemKind::Snippet },
+                                    { "(accumulator: var, element: real, index: int, array: list<real>): returnType => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(accumulator: var): returnType => expression"_s };
+
+    QTest::newRow("arrowSnippet-sort")
+            << testFile("completions/arrowSnippets.qml") << 15 << 28
+            << ExpectedCompletions{ { "(a: real, b: real): real => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(a: real): real => expression"_s };
+
+    QTest::newRow("arrowSnippet-noCallback")
+            << testFile("completions/arrowSnippets.qml") << 16 << 24
+            << ExpectedCompletions{ { "(parameter: type): returnType => expression"_L1, CompletionItemKind::Snippet },
+                                    { "(parameter: type): returnType => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(element: QtObject): void => { statements... }"_s };
+
+    QTest::newRow("contextualType-thirdParameter")
+            << testFile("completions/arrowSnippets.qml") << 17 << 69
+            << ExpectedCompletions{ { "length"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    QTest::newRow("contextualType-comparator")
+            << testFile("completions/arrowSnippets.qml") << 18 << 39
+            << ExpectedCompletions{ { "toFixed"_L1, CompletionItemKind::Method } }
+            << QStringList{  };
 }
 
 void tst_qmlls_utils::completions()
