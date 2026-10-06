@@ -922,9 +922,18 @@ void QQmlJSCodeGenerator::generate_LoadClosure(int value)
         INJECT_TRACE_INFO(generate_LoadClosure);
         if (m_state.accumulatorVariableOut.isEmpty())
             return;
+        const QString closure = u"aotContext->createClosure(%1)"_s.arg(value);
+
+        // A function is kept in a QVariant as the QJSValue it is. No need to go through the
+        // general conversion of JavaScript values to find that out.
+        if (m_state.accumulatorOut().isStoredIn(m_typeResolver->varType())) {
+            m_body += m_state.accumulatorVariableOut + u" = QVariant::fromValue("_s + closure
+                    + u");\n"_s;
+            return;
+        }
+
         m_body += m_state.accumulatorVariableOut + u" = "_s
-                + conversion(m_typeResolver->jsValueType(), m_state.accumulatorOut(),
-                             u"aotContext->createClosure(%1)"_s.arg(value))
+                + conversion(m_typeResolver->jsValueType(), m_state.accumulatorOut(), closure)
                 + u";\n"_s;
         return;
     }
