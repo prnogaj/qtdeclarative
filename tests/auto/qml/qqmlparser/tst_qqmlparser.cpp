@@ -16,6 +16,8 @@
 #include <QRegularExpression>
 #include <cstdlib>
 
+using namespace Qt::StringLiterals;
+
 class tst_qqmlparser : public QQmlDataTest
 {
     Q_OBJECT
@@ -45,6 +47,9 @@ private slots:
     void typeAnnotations();
     void disallowedTypeAnnotations_data();
     void disallowedTypeAnnotations();
+    void arrowFunctions_data();
+    void arrowFunctions();
+    void typedArrowFunctionAST();
     void semicolonPartOfExpressionStatement();
     void typeAssertion_data();
     void typeAssertion();
@@ -738,6 +743,136 @@ void tst_qqmlparser::disallowedTypeAnnotations()
     bool ok = qmlMode ? parser.parse() : parser.parseProgram();
     QVERIFY(!ok);
     QVERIFY2(parser.errorMessage().startsWith("Type annotations are not permitted "), qPrintable(parser.errorMessage()));
+}
+
+void tst_qqmlparser::arrowFunctions_data()
+{
+    QTest::addColumn<QString>("expression");
+    QTest::addColumn<bool>("valid");
+
+    // Type annotations on the parameters, and a return type after them
+    QTest::newRow("typed") << u"(x: real) => x"_s << true;
+    QTest::newRow("typed-two") << u"(x: real, i: int) => x * i"_s << true;
+    QTest::newRow("typed-return") << u"(x: real): real => x"_s << true;
+    QTest::newRow("typed-block") << u"(x: real): real => { return x }"_s << true;
+    QTest::newRow("typed-list") << u"(l: list<real>): int => l.length"_s << true;
+    QTest::newRow("typed-qualified") << u"(o: QtQml.QtObject) => o"_s << true;
+    QTest::newRow("typed-nested") << u"(x: int) => (y: int): int => x + y"_s << true;
+    QTest::newRow("typed-in-conditional") << u"true ? (x: int): int => x : (y: int) => y"_s << true;
+
+    // Either all parameters are annotated or none.
+    QTest::newRow("mixed-first") << u"(x: real, i) => x"_s << false;
+    QTest::newRow("mixed-second") << u"(x, i: int) => x"_s << false;
+
+    // A return type without parameters
+    QTest::newRow("typed-return-none") << u"(): real => 1"_s << true;
+    QTest::newRow("typed-return-none-block") << u"(): void => { }"_s << true;
+    QTest::newRow("typed-return-none-list") << u"(): list<real> => []"_s << true;
+    QTest::newRow("typed-return-none-nested") << u"(): var => (): int => 1"_s << true;
+    QTest::newRow("typed-return-none-in-conditional")
+            << u"true ? (): int => 1 : (): int => 2"_s << true;
+    QTest::newRow("typed-return-none-as-argument") << u"[1].map((): int => 1)"_s << true;
+    QTest::newRow("return-none-no-arrow") << u"(): real"_s << false;
+    QTest::newRow("return-none-no-type") << u"(): => 1"_s << false;
+    QTest::newRow("empty-parentheses-in-conditional") << u"true ? () : 0"_s << false;
+
+    // A return type needs an annotated parameter list, or none.
+    QTest::newRow("return-untyped-parameter") << u"(x): real => x"_s << false;
+    QTest::newRow("return-bare-parameter") << u"x: real => x"_s << false;
+
+    // An annotated parameter list is not an expression.
+    QTest::newRow("no-arrow") << u"(x: real)"_s << false;
+    QTest::newRow("default-value") << u"(x: real = 1) => x"_s << false;
+
+    // What was valid before still is.
+    QTest::newRow("plain") << u"x => x"_s << true;
+    QTest::newRow("plain-block") << u"x => { return x }"_s << true;
+    QTest::newRow("plain-paren") << u"(x) => x"_s << true;
+    QTest::newRow("plain-two") << u"(a, b) => a + b"_s << true;
+    QTest::newRow("plain-none") << u"() => 7"_s << true;
+    QTest::newRow("plain-none-block") << u"() => { return 7 }"_s << true;
+    QTest::newRow("plain-none-in-conditional") << u"true ? () => 1 : () => 2"_s << true;
+    QTest::newRow("plain-none-in-object") << u"({ a: () => 1, b: () => 2 })"_s << true;
+    QTest::newRow("plain-default") << u"(a, b = 2) => a + b"_s << true;
+    QTest::newRow("plain-rest") << u"(a, ...more) => a + more.length"_s << true;
+    QTest::newRow("plain-destructuring") << u"({a}, [b]) => a + b"_s << true;
+    QTest::newRow("plain-nested") << u"a => b => a + b"_s << true;
+    QTest::newRow("parenthesized") << u"(1 + 2) * 3"_s << true;
+    QTest::newRow("comma-expression") << u"(1, 2)"_s << true;
+    QTest::newRow("conditional") << u"true ? (x) : 0"_s << true;
+    QTest::newRow("conditional-arrows") << u"false ? (a => a) : (b => b + 1)"_s << true;
+    QTest::newRow("conditional-arrow-result") << u"true ? x => x : y => y"_s << true;
+    QTest::newRow("object-literal") << u"({ a: 1 })"_s << true;
+}
+
+void tst_qqmlparser::arrowFunctions()
+{
+    using namespace QQmlJS;
+
+    QFETCH(QString, expression);
+    QFETCH(bool, valid);
+
+    const QString code = u"import QtQml\nQtObject {\n    property var p: "_s + expression + u"\n}\n"_s;
+
+    Engine engine;
+    Lexer lexer(&engine);
+    lexer.setCode(code, 1, true);
+    Parser parser(&engine);
+    QCOMPARE(parser.parse(), valid);
+}
+
+void tst_qqmlparser::typedArrowFunctionAST()
+{
+    using namespace QQmlJS;
+
+    struct Finder : public AST::Visitor
+    {
+        bool visit(AST::FunctionExpression *f) override
+        {
+            functions.append(f);
+            return true;
+        }
+        void throwRecursionDepthError() override {}
+        QList<AST::FunctionExpression *> functions;
+    };
+
+    const QString code = u"import QtQml\nQtObject {\n"
+                          "    property var p: (x: real, i: int): string => x + i\n"
+                          "    property var q: (o: QtObject) => o\n}\n"_s;
+
+    Engine engine;
+    Lexer lexer(&engine);
+    lexer.setCode(code, 1, true);
+    Parser parser(&engine);
+    QVERIFY2(parser.parse(), qPrintable(parser.errorMessage()));
+
+    Finder finder;
+    parser.rootNode()->accept(&finder);
+    QCOMPARE(finder.functions.size(), 2);
+
+    const AST::FunctionExpression *p = finder.functions[0];
+    QVERIFY(p->isArrowFunction);
+    QVERIFY(p->typeAnnotation);
+    QCOMPARE(p->typeAnnotation->type->toString(), u"string"_s);
+
+    const AST::BoundNames parameters = p->formals->formals();
+    QCOMPARE(parameters.size(), 2);
+    QCOMPARE(parameters[0].id, u"x"_s);
+    QVERIFY(parameters[0].typeAnnotation);
+    QCOMPARE(parameters[0].typeAnnotation->type->toString(), u"real"_s);
+    QCOMPARE(parameters[1].id, u"i"_s);
+    QVERIFY(parameters[1].typeAnnotation);
+    QCOMPARE(parameters[1].typeAnnotation->type->toString(), u"int"_s);
+
+    // The comma is recorded with the parameter before it.
+    QVERIFY(p->formals->commaToken.isValid());
+    QVERIFY(!p->formals->next->commaToken.isValid());
+
+    const AST::FunctionExpression *q = finder.functions[1];
+    QVERIFY(q->isArrowFunction);
+    QVERIFY(!q->typeAnnotation);
+    QCOMPARE(q->formals->formals().size(), 1);
+    QVERIFY(q->formals->formals()[0].typeAnnotation);
 }
 
 void tst_qqmlparser::semicolonPartOfExpressionStatement()

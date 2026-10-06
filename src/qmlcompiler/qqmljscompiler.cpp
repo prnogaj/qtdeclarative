@@ -914,6 +914,45 @@ const QV4::Compiler::Context *QQmlJSAotCompiler::initializeClosure(
     if (formals > argumentTypes.size())
         return fail(u"Cannot inline a closure that takes more arguments than we can type"_s);
 
+    QQmlJSScope::ConstPtr declaredReturnType;
+
+    // A closure with declared types coerces what it is called with and what it returns. We call
+    // it with the types the caller has and take what it returns as it is. That is only the
+    // same if the declared types are those types.
+    if (QQmlJS::AST::Node *astNode = m_document->jsModule.contextMap.key(
+                const_cast<QV4::Compiler::Context *>(context))) {
+        if (QQmlJS::AST::FunctionExpression *ast = astNode->asFunctionDefinition()) {
+            QQmlJS::AST::BoundNames declared;
+            if (ast->formals)
+                declared = ast->formals->formals();
+            for (qsizetype i = 0; i < declared.size() && i < formals; ++i) {
+                if (!declared[i].typeAnnotation)
+                    continue;
+                const QQmlJSScope::ConstPtr type
+                        = m_typeResolver.typeFromAST(declared[i].typeAnnotation->type);
+                if (!type || !argumentTypes[i].contains(type)) {
+                    return fail(u"Cannot inline a closure whose parameter %1 is declared with "
+                                 "another type than it is called with"_s.arg(declared[i].id));
+                }
+            }
+
+            if (ast->typeAnnotation) {
+                const QQmlJSScope::ConstPtr type
+                        = m_typeResolver.typeFromAST(ast->typeAnnotation->type);
+                if (!type) {
+                    return fail(u"Cannot resolve the return type of a closure"_s);
+                } else if (!returnType) {
+                    // The caller takes what the closure returns. That has to be of the
+                    // declared type then. The type propagator checks it.
+                    declaredReturnType = type;
+                } else if (type != returnType && returnType != m_typeResolver.voidType()) {
+                    return fail(u"Cannot inline a closure that is declared to return another "
+                                 "type than the caller expects"_s);
+                }
+            }
+        }
+    }
+
     closure->closureSupport = outer->closureSupport;
     closure->identity = context;
     closure->isInlinedClosure = true;
@@ -931,6 +970,8 @@ const QV4::Compiler::Context *QQmlJSAotCompiler::initializeClosure(
     // Without a return type, the type propagator infers one. See inferredReturnType.
     if (returnType)
         closure->returnType = m_typeResolver.namedType(returnType);
+    else if (declaredReturnType)
+        closure->returnType = m_typeResolver.namedType(declaredReturnType);
     for (int i = QQmlJSCompilePass::FirstArgument + formals;
          i < context->registerCountInFunction; ++i) {
         closure->registerTypes.append(m_typeResolver.namedType(m_typeResolver.voidType()));
@@ -1225,13 +1266,16 @@ QQmlJSAotFunction QQmlJSAotCompiler::doCompile(
 
         // The closure may analyze further closures. So, don't hold on to its entry.
         QQmlJSScope::ConstPtr inferredReturnType;
-        if (!returnType)
+        const QQmlJSScope::ConstPtr knownReturnType = closure.returnType.isValid()
+                ? closure.returnType.containedType()
+                : QQmlJSScope::ConstPtr();
+        if (!knownReturnType)
             closure.inferredReturnType = &inferredReturnType;
         const auto recordTypes = qScopeGuard([&]() {
             QQmlJSCompilePass::ClosureSupport::Closure &analyzed
                     = closureSupport.closures[functionIndex];
             analyzed.argumentTypes = closure.argumentTypes;
-            analyzed.returnType = returnType ? returnType : inferredReturnType;
+            analyzed.returnType = knownReturnType ? knownReturnType : inferredReturnType;
         });
 
         bool basicBlocksValidationFailed = false;
