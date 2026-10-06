@@ -30,6 +30,7 @@ QQmlJSCompilePass::BlocksAndAnnotations QQmlJSTypePropagator::run(const Function
 {
     m_function = function;
     m_returnType = m_function->returnType;
+    m_loadedLocals.clear();
 
     // A closure analyzed while its outer function is being propagated shares the transaction
     // and the merge cache of the outer function.
@@ -236,9 +237,20 @@ void QQmlJSTypePropagator::loadContextLocal(int scope, int index)
     if (closureSupport && scope < m_function->contextChain.size()) {
         const ClosureSupport::Local local { m_function->contextChain[scope], index };
         if (const QQmlJSScope::ConstPtr type = closureSupport->localTypes.value(local)) {
-            setAccumulator(m_pool->createType(
+            const QQmlJSRegisterContent content = m_pool->createType(
                     type, QQmlJSRegisterContent::InvalidLookupIndex,
-                    QQmlJSRegisterContent::Operation));
+                    QQmlJSRegisterContent::Operation);
+            setAccumulator(content);
+
+            // Value types and lists of values are copies. See isCapturedCopy().
+            switch (type->accessSemantics()) {
+            case QQmlJSScope::AccessSemantics::Value:
+            case QQmlJSScope::AccessSemantics::Sequence:
+                m_loadedLocals.insert(content, { scope, index });
+                break;
+            default:
+                break;
+            }
             return;
         }
     }
@@ -311,7 +323,7 @@ bool QQmlJSTypePropagator::mergeContextLocal(
     // have to refer back to where it came from, and a JavaScript object or array cannot be
     // held in a C++ variable at all.
     //
-    // Experiment: Value types and lists of values are kept as copies. See copiedLocalTypes.
+    // Experiment: Value types and lists of values are kept as copies. See isCapturedCopy().
     const auto isPlain = [this](const QQmlJSScope::ConstPtr &type) {
         return m_typeResolver->isNumeric(type) || type == m_typeResolver->boolType()
                 || type == m_typeResolver->stringType();
@@ -340,7 +352,6 @@ bool QQmlJSTypePropagator::mergeContextLocal(
                 closureSupport->localTypes.remove(local);
             return false;
         }
-        closureSupport->copiedLocalTypes.insert(merged);
     }
 
     if (known != merged) {
@@ -352,20 +363,67 @@ bool QQmlJSTypePropagator::mergeContextLocal(
 
 /*!
  * \internal
- * Returns whether \a content may be the copy of a local that is itself a copy, and reports an
- * error in that case. To be called where \a content is changed. See copiedLocalTypes.
+ * Returns whether \a content, which is about to be changed, is a value type or a list of values
+ * loaded from a local of a context, or a part of one, and the change cannot be written back to
+ * that local. Reports an error in that case. A local holds a copy, and what is loaded from it
+ * is a copy of that. So without writing it back the change would be lost.
+ *
+ * If \a canWriteBack is true, the code generator writes \a content back when the instruction
+ * is done. Then a value loaded from a local is fine, and we tell the code generator where it
+ * belongs.
  */
-bool QQmlJSTypePropagator::isCapturedCopy(QQmlJSRegisterContent content)
+bool QQmlJSTypePropagator::isCapturedCopy(QQmlJSRegisterContent content, bool canWriteBack)
 {
-    const ClosureSupport *closureSupport = m_function->closureSupport;
-    if (!closureSupport || !content.isValid()
-            || !closureSupport->copiedLocalTypes.contains(content.containedType())) {
+    ClosureSupport *closureSupport = m_function->closureSupport;
+    if (!closureSupport)
         return false;
+
+    // What an earlier pass has found for this instruction may not hold anymore.
+    if (canWriteBack) {
+        closureSupport->localWriteBacks.remove(
+                { m_function->identity, currentInstructionOffset() });
     }
 
-    addError(u"Cannot change a value of type %1 in a function that keeps values of that type "
-              "in variables shared with a closure"_s.arg(content.containedType()->internalName()));
-    return true;
+    const auto fail = [&](QQmlJSRegisterContent copy) {
+        addError(u"Cannot change a value of type %1 that is a copy of a variable shared with a "
+                  "closure"_s.arg(copy.containedType()->internalName()));
+        return true;
+    };
+
+    bool isWhole = true;
+    for (int depth = 0; depth < 16 && content.isValid(); ++depth) {
+        const auto local = m_loadedLocals.constFind(content);
+        if (local != m_loadedLocals.constEnd()) {
+            if (!isWhole || !canWriteBack)
+                return fail(content);
+            closureSupport->localWriteBacks.insert(
+                    { m_function->identity, currentInstructionOffset() }, *local);
+            return false;
+        }
+
+        // A value merged from several sources: we cannot tell at run time which one it is.
+        if (content.isConversion()) {
+            const auto origins = content.conversionOrigins();
+            for (QQmlJSRegisterContent origin : origins) {
+                if (m_loadedLocals.contains(origin))
+                    return fail(origin);
+            }
+        }
+
+        switch (content.variant()) {
+        case QQmlJSRegisterContent::Property:
+        case QQmlJSRegisterContent::ListValue:
+        case QQmlJSRegisterContent::BaseType:
+        case QQmlJSRegisterContent::Extension:
+        case QQmlJSRegisterContent::Cast:
+            content = content.scope();
+            isWhole = false;
+            break;
+        default:
+            return false;
+        }
+    }
+    return false;
 }
 
 void QQmlJSTypePropagator::storeContextLocal(int scope, int index)
@@ -666,7 +724,7 @@ void QQmlJSTypePropagator::generate_StoreElement(int base, int index)
     const QQmlJSRegisterContent baseRegister = m_state.registers[base].content;
     const QQmlJSRegisterContent indexRegister = checkedInputRegister(index);
 
-    if (isCapturedCopy(baseRegister))
+    if (isCapturedCopy(baseRegister, true))
         return;
 
     if (!baseRegister.isList()
@@ -855,7 +913,7 @@ void QQmlJSTypePropagator::generate_StoreProperty(int nameIndex, int base)
     auto callBase = m_state.registers[base].content;
     const QString propertyName = m_jsUnitGenerator->stringForIndex(nameIndex);
 
-    if (isCapturedCopy(callBase))
+    if (isCapturedCopy(callBase, true))
         return;
 
     QQmlJSRegisterContent property = m_typeResolver->memberType(callBase, propertyName);
@@ -1704,7 +1762,7 @@ bool QQmlJSTypePropagator::propagateArrayMethod(
         "splice"_L1, "unshift"_L1
     };
     if (std::find(std::begin(mutators), std::end(mutators), name) != std::end(mutators)
-            && isCapturedCopy(baseType)) {
+            && isCapturedCopy(baseType, true)) {
         return false;
     }
 

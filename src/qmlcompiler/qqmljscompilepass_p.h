@@ -176,10 +176,11 @@ public:
         // passed to, by function index. Used for parameters without type annotation.
         QHash<int, QList<QQmlJSScope::ConstPtr>> contextualArgumentTypes;
 
-        // The value types and lists of values that are held in locals of contexts. A local
-        // holds a copy, and what is loaded from it is a copy of that. So a change to a loaded
-        // value would not arrive in the local. We don't compile such changes.
-        QSet<QQmlJSScope::ConstPtr> copiedLocalTypes;
+        // Instructions that change a value type or a list of values loaded from a local of a
+        // context: (identity of the function, instruction offset) -> (scope, index) of the
+        // local. A local holds a copy, and what is loaded from it is a copy of that. So the
+        // changed value has to be stored in the local again.
+        QHash<std::pair<const void *, int>, std::pair<int, int>> localWriteBacks;
 
         // The contexts a closure that escapes is created in. Their locals have to live where a
         // function object can find them: in JavaScript contexts, not in C++ variables. The

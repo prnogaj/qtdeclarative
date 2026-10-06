@@ -4326,6 +4326,19 @@ void tst_QmlCppCodegen::closureCapturedValues()
     QVERIFY(QMetaObject::invokeMethod(o.get(), "scaleAll", Q_RETURN_ARG(double, result)));
     QCOMPARE(result, 12.0);
 
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "moved", Q_RETURN_ARG(double, result)));
+    QCOMPARE(result, 2.0 + 4.0 + 7.0 + 7.0);
+
+    QVariant mover;
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "makeMover", Q_RETURN_ARG(QVariant, mover)));
+    QJSValue moverFunction = mover.value<QJSValue>();
+    QCOMPARE(moverFunction.call({ QJSValue(1.5) }).toNumber(), 11.5);
+    engine.collectGarbage();
+    QCOMPARE(moverFunction.call({ QJSValue(1.5) }).toNumber(), 13.0);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "collect", Q_RETURN_ARG(double, result)));
+    QCOMPARE(result, 18.0);
+
     QVERIFY(QMetaObject::invokeMethod(o.get(), "installScaler"));
     o->setProperty("factor", 5.0);
     QJSValue scaler = o->property("later").value<QJSValue>();
@@ -4356,10 +4369,6 @@ void tst_QmlCppCodegen::closureCapturedValuesFallback()
     o->setProperty("numbers", QVariant::fromValue(QList<double>{ 1, 2, 3, 4, 5 }));
     QCOMPARE(reader.value<QJSValue>().call().toNumber(), 5.0);
 
-    o->setProperty("numbers", QVariant::fromValue(QList<double>{ 1, 2, 3 }));
-    double result = 0;
-    QVERIFY(QMetaObject::invokeMethod(o.get(), "moved", Q_RETURN_ARG(double, result)));
-    QCOMPARE(result, 2.0 + 4.0 + 7.0);
 }
 
 void tst_QmlCppCodegen::closureEscaping()
