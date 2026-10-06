@@ -361,6 +361,7 @@ set(qml_files
     urlString.qml
     usingCxxTypesFromFileImports.qml
     valueTypeCast.qml
+    valueTypeConstructorArguments.qml
     valueTypeCopy.qml
     valueTypeDefault.qml
     valueTypeLists.qml

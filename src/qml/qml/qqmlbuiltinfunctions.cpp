@@ -9,7 +9,9 @@
 #include <private/qqmldebugserviceinterfaces_p.h>
 #include <private/qqmldelayedcallqueue_p.h>
 #include <private/qqmlengine_p.h>
+#include <private/qqmlglobal_p.h>
 #include <private/qqmlloggingcategorybase_p.h>
+#include <private/qqmlmetatype_p.h>
 #include <private/qqmlplatform_p.h>
 #include <private/qqmlstringconverters_p.h>
 
@@ -30,6 +32,7 @@
 #include <QtCore/qdatetime.h>
 #include <QtCore/qfileinfo.h>
 #include <QtCore/qloggingcategory.h>
+#include <QtCore/qmetaobject.h>
 #include <QtCore/qpoint.h>
 #include <QtCore/qrect.h>
 #include <QtCore/qsize.h>
@@ -493,34 +496,33 @@ QVariant QtObject::font(const QJSValue &fontSpecifier) const
     return QVariant();
 }
 
-template<typename T>
-void addParameters(QJSEngine *e, QJSValue &result, int i, T parameter)
+template<typename ...Numbers>
+static QVariant constructFromNumbers(QMetaType type, Numbers... numbers)
 {
-    result.setProperty(i, e->toScriptValue(parameter));
-}
+    static_assert((std::is_same_v<Numbers, double> && ...));
 
-template<>
-void addParameters<double>(QJSEngine *, QJSValue &result, int i, double parameter)
-{
-    result.setProperty(i, QJSValue(parameter));
-}
+    // The types to be constructed here live in QtGui, and we cannot link that. However, whoever
+    // has registered them as value types can offer an invokable constructor that takes the
+    // numbers as they are.
+    if (const QMetaObject *metaObject = QQmlMetaType::metaObjectForValueType(type)) {
+        const QMetaType numberType = QMetaType::fromType<double>();
+        for (int i = 0, end = metaObject->constructorCount(); i < end; ++i) {
+            const QMetaMethod ctor = metaObject->constructor(i);
+            if (ctor.parameterCount() != sizeof...(numbers))
+                continue;
 
-template<typename T, typename ...Others>
-void addParameters(QJSEngine *e, QJSValue &result, int i, T parameter, Others... others)
-{
-    addParameters<T>(e, result, i, parameter);
-    addParameters<Others...>(e, result, ++i, others...);
-}
+            bool takesNumbers = true;
+            for (int j = 0; takesNumbers && j < int(sizeof...(numbers)); ++j)
+                takesNumbers = (ctor.parameterMetaType(j) == numberType);
+            if (!takesNumbers)
+                continue;
 
-template<typename ...T>
-static QVariant constructFromJSValue(QJSEngine *e, QMetaType type, T... parameters)
-{
-    if (!e)
-        return QVariant();
-    QJSValue params = e->newArray(sizeof...(parameters));
-    addParameters(e, params, 0, parameters...);
-    const QVariant variant = QQmlValueTypeProvider::createValueType(params, type);
-    return variant.isValid() ? variant : QVariant(type);
+            void *args[] = { &numbers... };
+            return QQmlValueTypeProvider::constructValueType(type, metaObject, i, args);
+        }
+    }
+
+    return QVariant(type);
 }
 
 /*!
@@ -530,7 +532,7 @@ static QVariant constructFromJSValue(QJSEngine *e, QMetaType type, T... paramete
 */
 QVariant QtObject::vector2d(double x, double y) const
 {
-    return constructFromJSValue(jsEngine(), QMetaType(QMetaType::QVector2D), x, y);
+    return constructFromNumbers(QMetaType(QMetaType::QVector2D), x, y);
 }
 
 /*!
@@ -540,7 +542,7 @@ QVariant QtObject::vector2d(double x, double y) const
 */
 QVariant QtObject::vector3d(double x, double y, double z) const
 {
-    return constructFromJSValue(jsEngine(), QMetaType(QMetaType::QVector3D), x, y, z);
+    return constructFromNumbers(QMetaType(QMetaType::QVector3D), x, y, z);
 }
 
 /*!
@@ -550,7 +552,7 @@ QVariant QtObject::vector3d(double x, double y, double z) const
 */
 QVariant QtObject::vector4d(double x, double y, double z, double w) const
 {
-    return constructFromJSValue(jsEngine(), QMetaType(QMetaType::QVector4D), x, y, z, w);
+    return constructFromNumbers(QMetaType(QMetaType::QVector4D), x, y, z, w);
 }
 
 /*!
@@ -560,7 +562,7 @@ QVariant QtObject::vector4d(double x, double y, double z, double w) const
 */
 QVariant QtObject::quaternion(double scalar, double x, double y, double z) const
 {
-    return constructFromJSValue(jsEngine(), QMetaType(QMetaType::QQuaternion), scalar, x, y, z);
+    return constructFromNumbers(QMetaType(QMetaType::QQuaternion), scalar, x, y, z);
 }
 
 /*!
@@ -623,9 +625,9 @@ QVariant QtObject::matrix4x4(double m11, double m12, double m13, double m14,
                              double m31, double m32, double m33, double m34,
                              double m41, double m42, double m43, double m44) const
 {
-    return constructFromJSValue(jsEngine(), QMetaType(QMetaType::QMatrix4x4),
-                           m11, m12, m13, m14, m21, m22, m23, m24,
-                           m31, m32, m33, m34, m41, m42, m43, m44);
+    return constructFromNumbers(QMetaType(QMetaType::QMatrix4x4),
+                                m11, m12, m13, m14, m21, m22, m23, m24,
+                                m31, m32, m33, m34, m41, m42, m43, m44);
 }
 
 static QVariant colorVariantFromJSValue(const QJSValue &color, bool *ok)

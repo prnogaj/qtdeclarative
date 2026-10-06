@@ -51,6 +51,8 @@ private slots:
     void ownedValueInForeignEngine();
     void accessParentOnDestruction();
     void cleanInternalClasses();
+    void dropDeadTransitions();
+    void growTransitionsGeometrically();
     void createObjectsOnDestruction();
     void sharedInternalClassDataMarking();
     void gcTriggeredInOnDestroyed();
@@ -483,6 +485,107 @@ void tst_qv4mm::cleanInternalClasses()
     }
 
     checkICCHainLength();
+}
+
+void tst_qv4mm::dropDeadTransitions()
+{
+    QV4::ExecutionEngine engine;
+    QV4::Scope scope(engine.rootContext());
+    QV4::ScopedObject object(scope, engine.newObject());
+
+    // All plain objects start out with this class. Giving one of them a new prototype
+    // adds a transition to it.
+    QV4::Scoped<QV4::InternalClass> baseIC(scope, object->internalClass());
+    const qsizetype initialTransitions = baseIC->d()->transitions.size();
+
+    const uint numObjects = 1024;
+    const uint numRounds = 8;
+
+    // Keep the prototypes alive. This way each of them gets its own transition. Otherwise
+    // the memory manager may place a new prototype where a dead one has been, and we'd re-use
+    // the transition of the dead one.
+    QV4::ScopedArrayObject prototypes(scope, engine.newArrayObject());
+    for (uint i = 0; i < numObjects * numRounds + 1; ++i) {
+        QV4::Scope scope(&engine);
+        QV4::ScopedObject prototype(scope, engine.newObject());
+        prototypes->push_back(prototype);
+    }
+
+    const auto usePrototype = [&](uint index) {
+        QV4::Scope scope(&engine);
+        QV4::ScopedObject object(scope, engine.newObject());
+        QV4::ScopedObject prototype(scope, prototypes->get(index));
+        QCOMPARE(object->internalClass(), baseIC->d());
+        QVERIFY(object->setPrototypeOf(prototype));
+        QCOMPARE(object->internalClass()->parent, baseIC->d());
+    };
+
+    // This one stays in use.
+    QV4::ScopedObject usedPrototype(scope, prototypes->get(numObjects * numRounds));
+    QVERIFY(object->setPrototypeOf(usedPrototype));
+    QV4::Scoped<QV4::InternalClass> usedIC(scope, object->internalClass());
+    QCOMPARE(usedIC->d()->parent, baseIC->d());
+    QCOMPARE(baseIC->d()->transitions.size(), initialTransitions + 1);
+
+    for (uint round = 0; round < numRounds; ++round) {
+        for (uint i = 0; i < numObjects; ++i) {
+            usePrototype(round * numObjects + i);
+            QVERIFY(!QTest::currentTestFailed());
+        }
+
+        // Now the objects and the classes we've created for them are garbage.
+        gc(engine);
+        // NOTE: If we allocate new ICs during gc (potentially triggered on alloc),
+        // then they will survive the previous gc call
+        // run gc again to ensure that a full gc cycle happens
+        gc(engine);
+
+        // The transitions to the dead classes are dropped when we add further ones.
+        // At most half of the transitions can be dead ones.
+        QCOMPARE_LE(baseIC->d()->transitions.size(), initialTransitions + 1 + 2 * numObjects);
+    }
+
+    // The transition that is still in use has to stay.
+    QV4::ScopedObject other(scope, engine.newObject());
+    QVERIFY(other->setPrototypeOf(usedPrototype));
+    QCOMPARE(other->internalClass(), usedIC->d());
+
+    // A transition we've dropped can be created again.
+    usePrototype(0);
+}
+
+void tst_qv4mm::growTransitionsGeometrically()
+{
+    QV4::ExecutionEngine engine;
+    QV4::Scope scope(engine.rootContext());
+    QV4::ScopedObject object(scope, engine.newObject());
+    QV4::Scoped<QV4::InternalClass> baseIC(scope, object->internalClass());
+
+    // Keep the objects alive, so that all the transitions stay in use.
+    QV4::ScopedArrayObject objects(scope, engine.newArrayObject());
+
+    const int numTransitions = 4096;
+    int numReallocations = 0;
+    qsizetype capacity = baseIC->d()->transitions.capacity();
+    for (int i = 0; i < numTransitions; ++i) {
+        QV4::Scope scope(&engine);
+        QV4::ScopedObject object(scope, engine.newObject());
+        QV4::ScopedObject prototype(scope, engine.newObject());
+        QVERIFY(object->setPrototypeOf(prototype));
+        QCOMPARE(object->internalClass()->parent, baseIC->d());
+        objects->push_back(object);
+
+        if (const qsizetype newCapacity = baseIC->d()->transitions.capacity();
+                newCapacity != capacity) {
+            capacity = newCapacity;
+            ++numReallocations;
+        }
+    }
+
+    QCOMPARE_GE(baseIC->d()->transitions.size(), numTransitions);
+
+    // We don't want to copy all the transitions each time we add one.
+    QCOMPARE_LE(numReallocations, 16);
 }
 
 void tst_qv4mm::createObjectsOnDestruction()

@@ -78,20 +78,25 @@ ReturnedValue QMetaObjectWrapper::constructInternal(
     };
 
     const int constructorCount = mo->constructorCount();
-    if (constructorCount == 1) {
-        object = QObjectMethod::callPrecise(
-                objectOrGadget, constructors[0], v4, callData,
-                callType(constructors[0].propType()));
-    } else if (const QQmlPropertyData *ctor = QObjectMethod::resolveOverloaded(
-                       objectOrGadget, constructors, constructorCount, v4, callData)) {
-        object = QObjectMethod::callPrecise(
-                objectOrGadget, *ctor, v4, callData, callType(ctor->propType()));
-    }
+    const QQmlPropertyData *ctor = constructorCount == 1
+            ? &constructors[0]
+            : QObjectMethod::resolveOverloaded(
+                      objectOrGadget, constructors, constructorCount, v4, callData);
+    if (!ctor)
+        return Encode::undefined();
+
+    const QMetaObject::Call call = callType(ctor->propType());
+    object = QObjectMethod::callPrecise(objectOrGadget, *ctor, v4, callData, call);
 
     if (object) {
         Scoped<FunctionObject> functionObject(scope, d);
         object->defineDefaultProperty(v4->id_constructor(), functionObject);
-        object->setPrototypeOf(functionObject);
+
+        // A value has the prototype of its type, no matter how it was created. Besides, a QML
+        // type we look up is a new object each time. Using it as prototype would give each
+        // value an internal class of its own.
+        if (call == QMetaObject::CreateInstance)
+            object->setPrototypeOf(functionObject);
     }
 
     return object.asReturnedValue();
