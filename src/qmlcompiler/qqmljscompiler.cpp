@@ -1121,7 +1121,7 @@ QQmlJSAotFunction QQmlJSAotCompiler::compilePasses(
     Q_ASSERT(closureSupport);
 
     bool basicBlocksValidationFailed = false;
-    QQmlJSBasicBlocks basicBlocks(context, m_unitGenerator, &m_typeResolver, m_logger);
+    std::optional<QQmlJSBasicBlocks> basicBlocksPass;
     QQmlJSCompilePass::BlocksAndAnnotations passResult;
     auto &[blocks, annotations] = passResult;
 
@@ -1130,7 +1130,10 @@ QQmlJSAotFunction QQmlJSAotCompiler::compilePasses(
     // merged into more general ones. So this terminates.
     do {
         closureSupport->localTypesChanged = false;
-        passResult = basicBlocks.run(function, m_flags, basicBlocksValidationFailed);
+
+        // The pass keeps what it has found about the jumps. It cannot run twice.
+        basicBlocksPass.emplace(context, m_unitGenerator, &m_typeResolver, m_logger);
+        passResult = basicBlocksPass->run(function, m_flags, basicBlocksValidationFailed);
         QQmlJSTypePropagator propagator(
                 m_unitGenerator, &m_typeResolver, m_logger, blocks, annotations);
         passResult = propagator.run(function);
@@ -1150,7 +1153,7 @@ QQmlJSAotFunction QQmlJSAotCompiler::compilePasses(
 
     QQmlJSOptimizations optimizer(
             m_unitGenerator, &m_typeResolver, m_logger, blocks, annotations,
-            basicBlocks.objectAndArrayDefinitions());
+            basicBlocksPass->objectAndArrayDefinitions());
     passResult = optimizer.run(function);
     if (m_logger->currentFunctionHasErrorOrSkip())
         return QQmlJSAotFunction();
