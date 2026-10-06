@@ -1,0 +1,3 @@
+module Futures
+typeinfo futures.qmltypes
+import QtQml

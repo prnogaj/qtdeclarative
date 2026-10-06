@@ -29,7 +29,8 @@ remains with C++. The exception to this rule is when a QObject is returned from
 an explicit C++ method call: in this case, the QML engine assumes ownership of
 the object, unless the ownership of the object has explicitly been set to
 remain with C++ by invoking QQmlEngine::setObjectOwnership() with
-QQmlEngine::CppOwnership specified.
+QQmlEngine::CppOwnership specified. The same applies to a QObject that is the
+result of a QFuture, see \l{QFuture to JavaScript Thenable}.
 
 Additionally, the QML engine respects the normal QObject parent ownership
 semantics of Qt C++ objects, and will never delete a QObject instance which
@@ -307,6 +308,78 @@ details on how to manipulate JavaScript arrays from C++.
 
 The QML engine provides automatic type conversion between QByteArray values and
 JavaScript \c ArrayBuffer objects.
+
+\section2 QFuture to JavaScript Thenable
+
+Since Qt 6.13, a QFuture returned from C++, for example from a Q_INVOKABLE
+method, can be used like a JavaScript \c Promise:
+
+\code
+ class Service : public QObject
+ {
+     Q_OBJECT
+     QML_ELEMENT
+ public:
+     Q_INVOKABLE QFuture<Person *> fetchPerson();
+     Q_INVOKABLE void cancelRequest(const QFuture<Person *> &request);
+ };
+\endcode
+
+\qml
+ function load() {
+     const request = service.fetchPerson()
+     request.then(person => nameLabel.text = person.name)
+            .catch(error => console.warn(error.message))
+ }
+\endqml
+
+The JavaScript object still holds the original QFuture. If you pass it back to
+C++, the function receives the same future. Only \c then() and \c catch() are
+available on it. They behave like the methods of a \c Promise: they return a
+regular \c Promise, and you can chain them, return promises or futures from
+the handlers, and pass the future to \c{Promise.resolve()} or
+\c{Promise.all()}. The handlers are called asynchronously on the engine's
+thread, even if the future is finished already or finishes in another thread.
+Therefore, the engine's thread needs to run an event loop.
+
+When the future finishes, the promise
+\list
+    \li is fulfilled with the first result of the future, converted to
+        JavaScript like the return value of a method. A \c{QFuture<void>}, or
+        a future that finishes without a result, fulfills with \c undefined.
+        Further results are ignored.
+    \li is rejected with an \c Error if the future is canceled, or if it
+        failed with an exception. The message of the error is the \c what()
+        of a \c{std::exception}.
+\endlist
+
+Observing the future doesn't attach a continuation to it. It doesn't interfere
+with continuations the C++ side adds with QFuture::then(). Once \c then() or
+\c catch() has been called, the JavaScript object and the handlers are not
+garbage collected until the future finishes, even if nothing references them
+anymore. \l{The XMLHttpRequest JavaScript Object}{XMLHttpRequest} behaves the
+same way while a request is in progress. Like any JavaScript function, a handler
+runs even if the QML object it was defined in has been destroyed in the
+meantime. It then can't access that object's properties anymore. If the engine
+is deleted before the future finishes, the handlers are not called.
+A property holding the future doesn't change when the future finishes. If you
+start a new request before the previous one finished, the handlers of both run,
+in the order the futures finish.
+
+Futures often finish in worker threads. Prefer \l{Value Types}{value types}
+as results then: they are copied, and it doesn't matter which thread creates
+them. A QObject result follows the same \l{Data Ownership}{ownership rules} as
+a QObject returned from a method, but it has to live in the engine's thread.
+Move objects created in a worker thread to the engine's thread before reporting
+them, for example with QObject::moveToThread(). Otherwise, the engine prints a
+warning and leaves the ownership of the object with C++.
+
+This works for the result types you would use with QML anyway: built-in types,
+pointers to QObject-derived classes, \l{Value Types}{value types}, enumerations
+declared with Q_ENUM() or Q_ENUM_NS(), and lists of these. You don't need to
+register the future types explicitly. Other futures, for example of a plain
+struct without Q_GADGET, are passed to JavaScript as opaque values, like other
+unknown types.
 
 \section2 Value Types
 
