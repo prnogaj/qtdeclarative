@@ -100,6 +100,7 @@ private slots:
     void closureCapturedValues();
     void closureCapturedValuesFallback();
     void closureEscaping();
+    void liveListIteration();
     void closureEscapingFallback();
     void closureForEach();
     void closureForEachFallback();
@@ -4369,6 +4370,32 @@ void tst_QmlCppCodegen::closureCapturedValuesFallback()
     o->setProperty("numbers", QVariant::fromValue(QList<double>{ 1, 2, 3, 4, 5 }));
     QCOMPARE(reader.value<QJSValue>().call().toNumber(), 5.0);
 
+}
+
+void tst_QmlCppCodegen::liveListIteration()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/liveListIteration.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    // A loop over a list that is a property sees what its body does to that property, as in
+    // the interpreter. Compiled code holds a copy of the list, and reads it again as it goes.
+    const auto run = [&](const char *function) {
+        o->setProperty("log", QString());
+        o->setProperty("numbers", QVariant::fromValue(QList<double>{ 1, 2, 3, 4 }));
+        if (!QMetaObject::invokeMethod(o.get(), function))
+            return u"failed"_s;
+        return o->property("log").toString();
+    };
+
+    QCOMPARE(run("changeAhead"), u"1 2 30 40 "_s);
+    QCOMPARE(run("shrink"), u"1 2 "_s);
+    QCOMPARE(run("grow"), u"1 2 3 4 "_s);
+    QCOMPARE(run("growForOf"), u"1 2 3 4 100 200 "_s);
+    QCOMPARE(run("otherObject"), u"10 21 "_s);
+    QCOMPARE(run("copied"), u"1 2 3 4 "_s);
 }
 
 void tst_QmlCppCodegen::closureEscaping()

@@ -2703,6 +2703,106 @@ bool QQmlJSCodeGenerator::inlineConsoleMethod(const QString &name, int argc, int
 
 /*!
  * \internal
+ * Returns code that reads the list of values with \a content, held in \a variable, from the
+ * property it was read from once more, or an empty string if it is not a property we can
+ * read again.
+ *
+ * In JavaScript, a list of values read from a property refers to that property. A loop over
+ * it sees what the body of the loop does to the property. We hold a copy. So loops read the
+ * list again for each element.
+ */
+QString QQmlJSCodeGenerator::listReloadCode(QQmlJSRegisterContent content, const QString &variable)
+{
+    // For measuring what this costs
+    static const bool disabled = qEnvironmentVariableIsSet("QML_AOT_NO_LIVE_LISTS");
+    if (disabled)
+        return QString();
+
+    if (content.variant() != QQmlJSRegisterContent::Property || content.isConversion()
+            || content.storedType()->accessSemantics() != QQmlJSScope::AccessSemantics::Sequence
+            || content.isStoredIn(m_typeResolver->listPropertyType())
+            || !content.contains(content.storedType())) {
+        return QString();
+    }
+
+    const int lookupIndex = content.resultLookupIndex();
+    if (lookupIndex == QQmlJSRegisterContent::InvalidLookupIndex)
+        return QString();
+    const QString indexString = QString::number(lookupIndex);
+
+    QString lookup;
+    QString initialization;
+    if (isQmlScopeObject(content.scope())) {
+        lookup = u"aotContext->loadScopeObjectPropertyLookup("_s + indexString + u", "_s
+                + contentPointer(content, variable) + u')';
+        initialization = u"aotContext->initLoadScopeObjectPropertyLookup("_s + indexString + u')';
+    } else {
+        // The object the property belongs to is still where the lookup for it has put it.
+        QQmlJSRegisterContent outerContent;
+        for (auto it = m_state.lookups.constBegin(), end = m_state.lookups.constEnd();
+             it != end; ++it) {
+            if (it.value().content.resultLookupIndex() == content.baseLookupIndex()) {
+                outerContent = it.value().content;
+                break;
+            }
+        }
+        QString outer;
+        if (outerContent.isValid()) {
+            outer = lookupVariable(outerContent.resultLookupIndex());
+        } else {
+            // Or it belongs to an argument of this function, which is in its register.
+            QQmlJSRegisterContent scope = m_typeResolver->original(content.scope());
+            for (int depth = 0; depth < 8 && scope.isValid(); ++depth) {
+                const QQmlJSRegisterContent::ContentVariant variant = scope.variant();
+                if (variant != QQmlJSRegisterContent::BaseType
+                        && variant != QQmlJSRegisterContent::Extension
+                        && variant != QQmlJSRegisterContent::Cast) {
+                    break;
+                }
+                scope = m_typeResolver->original(scope.scope());
+            }
+            for (qsizetype i = 0, end = m_function->argumentTypes.size(); i < end; ++i) {
+                const QQmlJSRegisterContent argument = m_function->argumentTypes[i];
+                if (scope != argument && scope != m_typeResolver->original(argument))
+                    continue;
+                const int argumentRegister = FirstArgument + int(i);
+                if (!m_state.registers.contains(argumentRegister))
+                    return QString();
+                outerContent = registerType(argumentRegister);
+                outer = registerVariable(argumentRegister);
+                break;
+            }
+        }
+        if (!outerContent.isValid() || outer.isEmpty())
+            return QString();
+
+        if (outerContent.storedType()->isReferenceType()) {
+            lookup = u"aotContext->getObjectLookup("_s + indexString + u", "_s + outer + u", "_s
+                    + contentPointer(content, variable) + u')';
+            initialization = u"aotContext->initGetObjectLookup("_s + indexString + u", "_s
+                    + outer + u')';
+        } else if (outerContent.isStoredIn(m_typeResolver->varType())
+                   || outerContent.contains(outerContent.storedType())) {
+            // A value type. We hold a copy of it, and read the list from that.
+            lookup = u"aotContext->getValueLookup("_s + indexString + u", "_s
+                    + contentPointer(outerContent, outer) + u", "_s
+                    + contentPointer(content, variable) + u')';
+            initialization = u"aotContext->initGetValueLookup("_s + indexString + u", "_s
+                    + metaObject(content.scopeType()) + u')';
+        } else {
+            return QString();
+        }
+    }
+
+    QString code;
+    code.swap(m_body);
+    generateLookup(lookup, initialization);
+    code.swap(m_body);
+    return code;
+}
+
+/*!
+ * \internal
  * Generates the code for a method of a list that calls \a closure for each element. The
  * closure is not a JavaScript value. Its code becomes part of this function.
  */
@@ -2779,9 +2879,13 @@ bool QQmlJSCodeGenerator::inlineArrayCallback(
         }
     }
 
-    // As in the methods of ArrayPrototype, the length is read once.
+    // As in the methods of ArrayPrototype, the length is read once. What the closure did to
+    // the list so far is visible, though: elements that are gone are not visited.
+    const QString reload = isListProperty ? QString() : listReloadCode(baseType, baseVar);
     m_body += u"for (qsizetype i = 0, end = "_s + size + u"; i < end; ++i) {\n"_s;
-    if (isListProperty)
+    if (!reload.isEmpty())
+        m_body += u"if (i > 0) {\n"_s + reload + u"}\n"_s;
+    if (isListProperty || !reload.isEmpty())
         m_body += u"if (i >= "_s + size + u")\n    break;\n"_s;
 
     QString arguments = u"nullptr"_s;
@@ -3504,6 +3608,11 @@ void QQmlJSCodeGenerator::generate_GetIterator(int iterator)
         // without initializer, so that a jump across the declaration is legal.
         m_body += listType.storedType()->internalName() + u" *"_s + listName + u";\n"_s;
         m_body += listName + u" = &"_s + m_state.accumulatorVariableIn + u";\n"_s;
+
+        // See listReloadCode(). The list is read again before each step.
+        const QString reload = listReloadCode(listType, m_state.accumulatorVariableIn);
+        if (!reload.isEmpty())
+            m_iteratorReloads.insert(listName, reload);
     }
 }
 
@@ -3525,6 +3634,10 @@ void QQmlJSCodeGenerator::generate_IteratorNext(int value, int offset)
         qjsList = u"QJSList(" + listName + u", aotContext->engine)";
     else if (iteratorType != m_typeResolver->forInIteratorPtr())
         REJECT(u"using non-iterator as iterator"_s);
+
+    const auto reload = m_iteratorReloads.constFind(listName);
+    if (reload != m_iteratorReloads.constEnd())
+        m_body += u"{\n"_s + *reload + u"}\n"_s;
 
     m_body += u"if (" + m_state.accumulatorVariableIn + u"->hasNext(" + qjsList + u")) {\n    ";
 

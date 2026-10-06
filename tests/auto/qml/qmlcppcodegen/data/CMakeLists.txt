@@ -261,6 +261,7 @@ set(qml_files
     listConversion.qml
     listIndices.qml
     listOfInlineComponent.qml
+    liveListIteration.qml
     listOfInvisible.qml
     listPropertyAsModel.qml
     listPropertyPush.qml
