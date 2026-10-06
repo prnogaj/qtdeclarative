@@ -298,6 +298,29 @@ public:
     void setFilePath(const QString &filePath) { m_filePath =  filePath; }
     QString filePath() const { return m_filePath; }
 
+    bool isInTransaction() const { return m_inTransaction; }
+
+    // The messages logged since the start of the current transaction can be dropped again
+    // without ending the transaction. This is for passes that run nested in another pass.
+    struct PendingState
+    {
+        qsizetype messages = 0;
+        qsizetype output = 0;
+        bool compileError = false;
+    };
+
+    PendingState pendingState() const
+    {
+        return { m_pendingMessages.size(), m_output.bufferSize(), m_hasPendingCompileError };
+    }
+
+    void restorePendingState(const PendingState &state)
+    {
+        m_pendingMessages.resize(state.messages);
+        m_output.truncateBuffer(state.output);
+        m_hasPendingCompileError = state.compileError;
+    }
+
     bool currentFunctionHasCompileError() const
     {
         return m_hasCompileError || m_hasPendingCompileError;

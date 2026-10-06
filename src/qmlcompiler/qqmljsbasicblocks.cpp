@@ -191,6 +191,13 @@ void QQmlJSBasicBlocks::generate_Jump(int offset)
     processJump(offset, Unconditional);
 }
 
+void QQmlJSBasicBlocks::generate_UnwindToLabel(int level, int offset)
+{
+    // The type propagator and the code generator treat this as a jump.
+    Q_UNUSED(level)
+    processJump(offset, Unconditional);
+}
+
 void QQmlJSBasicBlocks::generate_JumpTrue(int offset)
 {
     processJump(offset, Conditional);
