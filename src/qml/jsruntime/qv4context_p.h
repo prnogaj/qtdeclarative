@@ -120,6 +120,7 @@ struct Q_QML_EXPORT ExecutionContext : public Managed
     static Heap::CallContext *cloneBlockContext(ExecutionEngine *engine,
                                                 Heap::CallContext *callContext);
     static Heap::CallContext *newCallContext(JSTypesStackFrame *frame);
+    static Heap::CallContext *newCallContext(MetaTypesStackFrame *frame);
     Heap::ExecutionContext *newWithContext(Heap::Object *with) const;
     static Heap::ExecutionContext *newCatchContext(CppStackFrame *frame, int blockIndex, Heap::String *exceptionVarName);
 

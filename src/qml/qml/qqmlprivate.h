@@ -679,6 +679,14 @@ namespace QQmlPrivate
         QJSValue jsMetaType(int index) const;
         void setInstructionPointer(int offset) const;
         void setLocals(const AOTTrackedLocalsStorage *locals) const;
+
+        // Experiment: JavaScript contexts for compiled functions whose closures are JavaScript
+        // function objects. The function creates its call context and keeps its captured
+        // variables there. scope counts the contexts outwards from the current one.
+        void pushCallContext() const;
+        void loadContextLocal(int scope, int index, QMetaType type, void *target) const;
+        void storeContextLocal(int scope, int index, QMetaType type, const void *source) const;
+        QJSValue createClosure(int functionIndex) const;
         void setReturnValueUndefined() const;
 
         static void mark(QObject *object, QV4::MarkStack *markStack);

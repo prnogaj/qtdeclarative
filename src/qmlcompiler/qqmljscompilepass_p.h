@@ -163,6 +163,18 @@ public:
 
         // The same for the instructions that call the closure
         QHash<std::pair<const void *, int>, int> inlinedCalls;
+
+        // All LoadClosure instructions we have seen, in the same form. Those that are not
+        // inlined create JavaScript function objects: The closure escapes.
+        QHash<std::pair<const void *, int>, int> loadedClosures;
+
+        // The closures that escape, by function index, with their return types. They are
+        // compiled as functions of their own.
+        QHash<int, QQmlJSScope::ConstPtr> escapingClosures;
+
+        // If any closure escapes, the captured variables have to live where a function object
+        // can find them: in JavaScript contexts, not in C++ variables.
+        bool realContexts = false;
     };
 
     struct Function

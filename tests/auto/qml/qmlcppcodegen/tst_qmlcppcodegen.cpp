@@ -95,6 +95,8 @@ private slots:
     void collectGarbageDuringAotCode();
     void closureArrayMethods();
     void closureCapturedObjects();
+    void closureEscaping();
+    void closureEscapingFallback();
     void closureForEach();
     void closureForEachFallback();
     void closureForEachGc();
@@ -4237,6 +4239,105 @@ void tst_QmlCppCodegen::closureCapturedObjects()
             o.get(), "capturedArgument", Q_RETURN_ARG(QString, string),
             Q_ARG(Person *, target)));
     QCOMPARE(string, u"targettargettarget"_s);
+}
+
+void tst_QmlCppCodegen::closureEscaping()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureEscaping.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "install", Q_ARG(double, 2.0)));
+    QJSValue callback = o->property("callback").value<QJSValue>();
+    QVERIFY(callback.isCallable());
+    QCOMPARE(callback.call({ 1 }).toNumber(), 2.0);
+    QCOMPARE(callback.call({ 3 }).toNumber(), 8.0);
+    QCOMPARE(o->property("total").toDouble(), 8.0);
+
+    // The context of the first call is kept alive by the function object alone.
+    engine.collectGarbage();
+    QCOMPARE(callback.call({ 1 }).toNumber(), 10.0);
+
+    // Arguments are coerced to the declared types.
+    QCOMPARE(callback.call({ u"2"_s }).toNumber(), 14.0);
+
+    // Another call of the function creates another context.
+    QVERIFY(QMetaObject::invokeMethod(o.get(), "install", Q_ARG(double, 10.0)));
+    QJSValue second = o->property("callback").value<QJSValue>();
+    QCOMPARE(second.call({ 1 }).toNumber(), 10.0);
+    QCOMPARE(callback.call({ 0 }).toNumber(), 14.0);
+
+    const auto make = [&](const char *function, auto &&argument) {
+        QVariant result;
+        [&]() {
+            QVERIFY(QMetaObject::invokeMethod(
+                    o.get(), function, Q_RETURN_ARG(QVariant, result), argument));
+        }();
+        return result.value<QJSValue>();
+    };
+
+    QJSValue a = make("makeCounter", Q_ARG(int, 0));
+    QJSValue b = make("makeCounter", Q_ARG(int, 100));
+    QVERIFY(a.isCallable());
+    QCOMPARE(a.call().toInt(), 1);
+    QCOMPARE(a.call().toInt(), 2);
+    QCOMPARE(b.call().toInt(), 101);
+    QCOMPARE(a.call().toInt(), 3);
+
+    Person *person = o->property("person").value<Person *>();
+    QVERIFY(person);
+    QJSValue describe = make("makeDescriber", Q_ARG(QString, u"-"_s));
+    QCOMPARE(describe.call().toString(), u"-p1"_s);
+    engine.collectGarbage();
+    QCOMPARE(describe.call().toString(), u"-p2"_s);
+    QCOMPARE(person->shoeSize(), 3);
+
+    QVariant adderVariant;
+    QVERIFY(QMetaObject::invokeMethod(
+            o.get(), "sumThenAdder", Q_RETURN_ARG(QVariant, adderVariant)));
+    QJSValue adder = adderVariant.value<QJSValue>();
+    QCOMPARE(adder.call({ 2 }).toNumber(), 10.0);
+    QCOMPARE(adder.call({ 0.5 }).toNumber(), 10.5);
+
+    QJSValue maker = make("makeMaker", Q_ARG(int, 10));
+    QJSValue byThree = maker.call({ 3 });
+    QVERIFY(byThree.isCallable());
+    QCOMPARE(byThree.call().toInt(), 31);
+    QCOMPARE(byThree.call().toInt(), 32);
+    QJSValue byFour = maker.call({ 4 });
+    QCOMPARE(byFour.call().toInt(), 41);
+    QCOMPARE(byThree.call().toInt(), 33);
+}
+
+void tst_QmlCppCodegen::closureEscapingFallback()
+{
+    QQmlEngine engine;
+    QQmlComponent c(&engine, QUrl(u"qrc:/qt/qml/TestTypes/closureEscapingFallback.qml"_s));
+    QVERIFY2(c.isReady(), qPrintable(c.errorString()));
+    std::unique_ptr<QObject> o(c.create());
+    QVERIFY(o);
+
+    const auto make = [&](const char *function) {
+        QVariant result;
+        [&]() {
+            QVERIFY(QMetaObject::invokeMethod(o.get(), function, Q_RETURN_ARG(QVariant, result)));
+        }();
+        return result.value<QJSValue>();
+    };
+
+    QJSValue sum = make("untypedParameter");
+    QCOMPARE(sum.call({ 1 }).toNumber(), 1.0);
+    QCOMPARE(sum.call({ 2.5 }).toNumber(), 3.5);
+
+    // What a closure without declared types does depends on what it is called with.
+    QJSValue text = make("concatenating");
+    QCOMPARE(text.call({ 1 }).toString(), u"1"_s);
+    QCOMPARE(text.call({ u"a"_s }).toString(), u"1a"_s);
+
+    QJSValue usesThis = make("usesThis");
+    QVERIFY(!usesThis.call().toBool());
 }
 
 void tst_QmlCppCodegen::closureForEach()
