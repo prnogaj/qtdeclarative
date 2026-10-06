@@ -1444,6 +1444,8 @@ void TestQmllint::dirtyQmlCode_data()
                .addExpected("Member \"missing\" not found on type \"closureMembers\""_L1, 22, 48)
                .addExpected("Member \"wrong\" not found on type \"qlonglong\""_L1, 22, 64)
                .addExpected("Member \"typo\" not found on type \"QObject\""_L1, 23, 42)
+               .addExpected("Member \"lenght\" not found on type \"QList<double>\""_L1, 27, 63)
+               .addExpected("Member \"wrong\" not found on type \"double\""_L1, 27, 74)
                .build()
             << defaultOptions;
     // What Qt.vector3d() and friends return has a type.

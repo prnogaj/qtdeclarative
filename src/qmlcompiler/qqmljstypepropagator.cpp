@@ -1857,10 +1857,15 @@ bool QQmlJSTypePropagator::propagateArrayMethod(
         // cannot take the array as third argument.
         ClosureSupport *closureSupport = m_function->closureSupport;
         const int functionIndex = m_closure.functionIndex;
-        const QList<QQmlJSRegisterContent> arguments = {
+        QList<QQmlJSRegisterContent> arguments = {
             m_typeResolver->namedType(elementContained),
             m_typeResolver->namedType(m_typeResolver->int32Type())
         };
+
+        // The third argument is the list itself. The code we generate does not pass it, but
+        // whoever only wants the types can have it.
+        if (closureSupport->analysisOnly)
+            arguments.append(m_typeResolver->namedType(baseContained));
 
         // forEach() ignores what the callback returns, map() takes whatever it returns, and the
         // others want a boolean.

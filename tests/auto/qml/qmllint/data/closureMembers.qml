@@ -22,4 +22,8 @@ QtObject {
         root.stored = () => { root.text = root.missing + count.wrong }
         root.stored = (o: QtObject) => o.typo
     }
+
+    function withAllArguments(): void {
+        root.numbers.forEach((n, i, all) => { root.text = all.lenght + n.wrong })
+    }
 }
