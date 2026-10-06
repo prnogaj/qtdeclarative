@@ -57,6 +57,9 @@ public:
 
     struct AOTCompiledFunction {
         QVarLengthArray<QMetaType, 4> types;
+
+        // Whether any parameter is a list<T>. Those need to be coerced before the call.
+        bool hasListArguments = false;
     };
 
     QV4::ExecutableCompilationUnit *executableCompilationUnit() const

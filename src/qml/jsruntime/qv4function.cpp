@@ -143,6 +143,10 @@ Function::Function(ExecutionEngine *engine, ExecutableCompilationUnit *unit,
         kind = AotCompiled;
         aotCompiledFunction.types.resize(aotFunction->numArguments + 1);
         aotFunction->signature(unit, aotCompiledFunction.types.data());
+        for (qsizetype i = 1, end = aotCompiledFunction.types.size(); i < end; ++i) {
+            if (aotCompiledFunction.types[i].flags() & QMetaType::IsQmlList)
+                aotCompiledFunction.hasListArguments = true;
+        }
         return;
     }
 

@@ -25,6 +25,8 @@
 #include <private/qv4identifiertable_p.h>
 #include <private/qv4lookup_p.h>
 #include <private/qv4qobjectwrapper_p.h>
+#include <private/qv4stackframe_p.h>
+#include <private/qv4vme_moth_p.h>
 
 #include <QtQml/qqmlprivate.h>
 
@@ -1226,16 +1228,60 @@ void AOTCompiledContext::loadContextLocal(
 {
     QV4::ExecutionEngine *v4 = engine->handle();
     const QV4::Heap::CallContext *context = callContext(v4, scope);
-    QV4::ExecutionEngine::metaTypeFromJS(context->locals[index], type, target);
+    const QV4::Value &value = context->locals[index];
+
+    // Mostly the local holds what we have stored there.
+    switch (type.id()) {
+    case QMetaType::Int:
+        if (value.isInteger()) {
+            *static_cast<int *>(target) = value.integerValue();
+            return;
+        }
+        break;
+    case QMetaType::Double:
+        if (value.isNumber()) {
+            *static_cast<double *>(target) = value.asDouble();
+            return;
+        }
+        break;
+    case QMetaType::Bool:
+        if (value.isBoolean()) {
+            *static_cast<bool *>(target) = value.booleanValue();
+            return;
+        }
+        break;
+    default:
+        break;
+    }
+
+    QV4::ExecutionEngine::metaTypeFromJS(value, type, target);
 }
 
 void AOTCompiledContext::storeContextLocal(
         int scope, int index, QMetaType type, const void *source) const
 {
     QV4::ExecutionEngine *v4 = engine->handle();
+    QV4::Heap::CallContext *context = callContext(v4, scope);
+
+    // Primitives are not managed by the garbage collector. So we need no scope for them.
+    switch (type.id()) {
+    case QMetaType::Int:
+        context->locals.set(v4, index, QV4::Value::fromInt32(*static_cast<const int *>(source)));
+        return;
+    case QMetaType::Double:
+        context->locals.set(
+                v4, index, QV4::Value::fromDouble(*static_cast<const double *>(source)));
+        return;
+    case QMetaType::Bool:
+        context->locals.set(
+                v4, index, QV4::Value::fromBoolean(*static_cast<const bool *>(source)));
+        return;
+    default:
+        break;
+    }
+
     QV4::Scope scopeForValue(v4);
     QV4::ScopedValue value(scopeForValue, v4->metaTypeToJS(type, source));
-    QV4::Heap::CallContext *context = callContext(v4, scope);
     context->locals.set(v4, index, value);
 }
 
@@ -1274,6 +1320,116 @@ QJSValue AOTCompiledContext::callValueMethod(
     if (v4->hasException)
         return QJSValue();
     return QJSValuePrivate::fromReturnedValue(result->asReturnedValue());
+}
+
+// Calls \a function and returns what it returns, or undefined with a pending exception.
+static QV4::ReturnedValue callJSValue(
+        QV4::ExecutionEngine *v4, const QJSValue &function, int argc, const QMetaType *types,
+        const void *const *arguments)
+{
+    const QV4::FunctionObject *functionObject
+            = QJSValuePrivate::asManagedType<QV4::FunctionObject>(&function);
+    if (!functionObject) {
+        v4->throwTypeError(QStringLiteral("%1 is not a function").arg(function.toString()));
+        return QV4::Encode::undefined();
+    }
+
+    QV4::Scope scope(v4);
+
+    // Another compiled function: pass the arguments as they are. They are only converted where
+    // the function declares other types.
+    if (const QV4::ArrowFunction *closure = functionObject->as<QV4::ArrowFunction>()) {
+        QV4::Function *callee = closure->function();
+        if (callee && callee->kind == QV4::Function::AotCompiled) {
+            // If it declares exactly the types we have, there is nothing to convert at all.
+            const auto &calleeTypes = callee->aotCompiledFunction.types;
+            bool isMatching = calleeTypes.size() == argc + 1 && argc < 8;
+            for (int i = 0; isMatching && i < argc; ++i)
+                isMatching = calleeTypes[i + 1] == types[i];
+            if (isMatching) {
+                const QMetaType returnType = calleeTypes[0];
+                void *values[8];
+                Q_ALLOCA_INIT();
+                Q_ALLOCA_DECLARE(void, returnValue);
+                if (const qsizetype returnSize = returnType.sizeOf()) {
+                    Q_ALLOCA_ASSIGN(void, returnValue, returnSize);
+                    if (returnType.flags() & QMetaType::NeedsConstruction)
+                        returnType.construct(returnValue);
+                }
+                values[0] = returnValue;
+                for (int i = 0; i < argc; ++i)
+                    values[i + 1] = const_cast<void *>(arguments[i]);
+
+                QV4::Scoped<QV4::ExecutionContext> context(scope, closure->scope());
+                QV4::MetaTypesStackFrame frame;
+                frame.init(callee, nullptr, context, values, calleeTypes.data(), argc);
+                frame.push(v4);
+                QV4::Moth::VME::execWithMatchingTypes(&frame, v4);
+                frame.pop(v4);
+
+                QV4::ReturnedValue result = QV4::Encode::undefined();
+                if (returnValue) {
+                    if (!v4->hasException)
+                        result = v4->metaTypeToJS(returnType, returnValue);
+                    if (returnType.flags() & QMetaType::NeedsDestruction)
+                        returnType.destruct(returnValue);
+                }
+                if (v4->hasException)
+                    return QV4::Encode::undefined();
+                return result;
+            }
+
+            QVariant result;
+            QVarLengthArray<void *, 8> values(argc + 1);
+            QVarLengthArray<QMetaType, 8> valueTypes(argc + 1);
+            values[0] = &result;
+            valueTypes[0] = QMetaType::fromType<QVariant>();
+            for (int i = 0; i < argc; ++i) {
+                values[i + 1] = const_cast<void *>(arguments[i]);
+                valueTypes[i + 1] = types[i];
+            }
+            functionObject->call(nullptr, values.data(), valueTypes.data(), argc);
+            if (v4->hasException)
+                return QV4::Encode::undefined();
+            return v4->fromVariant(result);
+        }
+    }
+
+    QV4::JSCallArguments jsCallData(scope, argc);
+    for (int i = 0; i < argc; ++i)
+        jsCallData.args[i] = v4->metaTypeToJS(types[i], arguments[i]);
+
+    QV4::ScopedValue undefined(scope, QV4::Value::undefinedValue());
+    QV4::ScopedValue result(scope, functionObject->call(undefined, jsCallData.args, argc));
+    if (v4->hasException)
+        return QV4::Encode::undefined();
+    return result->asReturnedValue();
+}
+
+QJSValue AOTCompiledContext::callValue(
+        const QJSValue &function, int argc, const QMetaType *types,
+        const void *const *arguments) const
+{
+    return QJSValuePrivate::fromReturnedValue(
+            callJSValue(engine->handle(), function, argc, types, arguments));
+}
+
+QJSPrimitiveValue AOTCompiledContext::callValueForPrimitive(
+        const QJSValue &function, int argc, const QMetaType *types,
+        const void *const *arguments) const
+{
+    QV4::ExecutionEngine *v4 = engine->handle();
+    QV4::Scope scope(v4);
+    QV4::ScopedValue result(scope, callJSValue(v4, function, argc, types, arguments));
+    if (result->isInteger())
+        return QJSPrimitiveValue(result->integerValue());
+    if (result->isNumber())
+        return QJSPrimitiveValue(result->asDouble());
+    if (result->isBoolean())
+        return QJSPrimitiveValue(result->booleanValue());
+    if (result->isUndefined())
+        return QJSPrimitiveValue();
+    return QJSValuePrivate::fromReturnedValue(result->asReturnedValue()).toPrimitive();
 }
 
 void AOTCompiledContext::setReturnValueUndefined() const
