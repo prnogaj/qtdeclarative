@@ -1446,6 +1446,14 @@ void TestQmllint::dirtyQmlCode_data()
                .addExpected("Member \"typo\" not found on type \"QObject\""_L1, 23, 42)
                .build()
             << defaultOptions;
+    // What Qt.vector3d() and friends return has a type.
+    QTest::newRow("valueTypeFactoryMembers")
+            << QStringLiteral("valueTypeFactoryMembers.qml")
+            << ResultBuilder()
+               .addExpected("Member \"nope\" not found on type \"QVector3D\""_L1, 4, 43)
+               .addExpected("Member \"lenght\" not found on type \"QVector2D\""_L1, 7, 40)
+               .build()
+            << defaultOptions;
     QTest::newRow("lintInnerFunctionsToo")
             << QStringLiteral("lintInnerFunctionsToo.qml")
             << ResultBuilder()

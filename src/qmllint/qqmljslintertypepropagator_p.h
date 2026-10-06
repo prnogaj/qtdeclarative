@@ -64,7 +64,7 @@ private:
     void propagateCall(const QList<QQmlJSMetaMethod> &methods, int argc, int argv,
                        QQmlJSRegisterContent scope) override;
     void propagateTranslationMethod_SAcheck(const QString &methodName) override;
-    bool propagatesValueTypeFactories() const override { return false; }
+    bool propagatesValueTypeFactories() const override { return true; }
     void warnAboutTypeCoercion(int lhs) override;
 
     bool checkTypeResolved(const QQmlJSScope::ConstPtr &type);

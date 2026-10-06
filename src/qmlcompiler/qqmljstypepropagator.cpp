@@ -1494,7 +1494,22 @@ bool QQmlJSTypePropagator::propagateValueTypeFactory(
 
     // The value type has the same name as the function that creates it.
     const QQmlJSScope::ConstPtr valueType = m_typeResolver->typeForName(name);
-    if (!valueType || !valueType->isValueType() || !valueType->isCreatable())
+    if (!valueType || !valueType->isValueType())
+        return false;
+
+    // The linter does not need a constructor to call. It keeps the call as it is written and
+    // only wants to know what comes out of it.
+    if (m_function->closureSupport && m_function->closureSupport->analysisOnly) {
+        const QList<QQmlJSMetaMethod> methods = qtObject->methods(name);
+        if (methods.isEmpty())
+            return false;
+        for (int i = 0; i < argc; ++i)
+            addReadRegister(argv + i, m_state.registers[argv + i].content);
+        setAccumulator(m_typeResolver->returnType(methods.first(), valueType, scope));
+        return true;
+    }
+
+    if (!valueType->isCreatable())
         return false;
 
     const auto extension = valueType->extensionType();
