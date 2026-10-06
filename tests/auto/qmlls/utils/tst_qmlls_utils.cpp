@@ -4677,6 +4677,86 @@ void tst_qmlls_utils::completions_data()
             << ExpectedCompletions { {"x"_L1, CompletionItemKind::Property },
                                      {"y"_L1, CompletionItemKind::Property } }
             << QStringList {};
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-callbackParameter")
+            << testFile("completions/contextualTypes.qml") << 10 << 51
+            << ExpectedCompletions{ { "objectName"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-initializedConst")
+            << testFile("completions/contextualTypes.qml") << 12 << 27
+            << ExpectedCompletions{ { "objectName"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-filterCallback")
+            << testFile("completions/contextualTypes.qml") << 13 << 35
+            << ExpectedCompletions{ { "running"_L1, CompletionItemKind::Property }, { "interval"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-afterFilter")
+            << testFile("completions/contextualTypes.qml") << 13 << 73
+            << ExpectedCompletions{ { "interval"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-constFromConst")
+            << testFile("completions/contextualTypes.qml") << 16 << 26
+            << ExpectedCompletions{ { "interval"_L1, CompletionItemKind::Property }, { "repeat"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-functionExpression")
+            << testFile("completions/contextualTypes.qml") << 17 << 58
+            << ExpectedCompletions{ { "objectName"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-firstOfTwoParameters")
+            << testFile("completions/contextualTypes.qml") << 18 << 59
+            << ExpectedCompletions{ { "repeat"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-declaredTypeWins")
+            << testFile("completions/contextualTypes.qml") << 19 << 62
+            << ExpectedCompletions{ { "objectName"_L1, CompletionItemKind::Property } }
+            << QStringList{ u"interval"_s };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-unknownInitializer")
+            << testFile("completions/contextualTypes.qml") << 21 << 29
+            << ExpectedCompletions{  }
+            << QStringList{ u"objectName"_s };
+
+    QTest::newRow("contextualType-thenCallback")
+            << testFile("completions/futureThen.qml") << 10 << 72
+            << ExpectedCompletions{ { "shoeSize"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    QTest::newRow("contextualType-listInThenCallback")
+            << testFile("completions/futureThen.qml") << 12 << 57
+            << ExpectedCompletions{ { "shoeSize"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    QTest::newRow("contextualType-rejectionCallback")
+            << testFile("completions/futureThen.qml") << 14 << 84
+            << ExpectedCompletions{  }
+            << QStringList{ u"shoeSize"_s };
+
+    QTest::newRow("contextualType-thenOnVoidFuture")
+            << testFile("completions/futureThen.qml") << 15 << 67
+            << ExpectedCompletions{  }
+            << QStringList{ u"shoeSize"_s };
+
+    QTest::newRow("methodsOfFuture")
+            << testFile("completions/futureThen.qml") << 16 << 36
+            << ExpectedCompletions{ { "then"_L1, CompletionItemKind::Method },
+                                    { "catch"_L1, CompletionItemKind::Method } }
+            << QStringList{ u"shoeSize"_s };
 }
 
 void tst_qmlls_utils::completions()
