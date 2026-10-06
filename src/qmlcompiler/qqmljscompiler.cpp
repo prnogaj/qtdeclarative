@@ -1006,9 +1006,12 @@ const QV4::Compiler::Context *QQmlJSAotCompiler::initializeEscapingClosure(
     if (context->isGenerator)
         return fail(u"Cannot compile a generator function as closure"_s);
 
-    // We don't know what "this" is when someone else calls the function object.
-    if (context->usesThis || context->innerFunctionAccessesThis
-            || context->usesArgumentsObject == QV4::Compiler::Context::UsesArgumentsObject::Used) {
+    // We don't know what "this" is when someone else calls the function object. An arrow
+    // function has no "this" of its own. It reads the one of the function around it from a
+    // local of that function's context.
+    if (context->usesArgumentsObject == QV4::Compiler::Context::UsesArgumentsObject::Used
+            || (!context->isArrowFunction
+                && (context->usesThis || context->innerFunctionAccessesThis))) {
         return fail(u"Cannot compile a closure that uses \"this\" or \"arguments\""_s);
     }
 
@@ -1118,7 +1121,7 @@ QQmlJSAotFunction QQmlJSAotCompiler::compilePasses(
     Q_ASSERT(closureSupport);
 
     bool basicBlocksValidationFailed = false;
-    QQmlJSBasicBlocks basicBlocks(context, m_unitGenerator, &m_typeResolver, m_logger);
+    std::optional<QQmlJSBasicBlocks> basicBlocksPass;
     QQmlJSCompilePass::BlocksAndAnnotations passResult;
     auto &[blocks, annotations] = passResult;
 
@@ -1127,7 +1130,10 @@ QQmlJSAotFunction QQmlJSAotCompiler::compilePasses(
     // merged into more general ones. So this terminates.
     do {
         closureSupport->localTypesChanged = false;
-        passResult = basicBlocks.run(function, m_flags, basicBlocksValidationFailed);
+
+        // The pass keeps what it has found about the jumps. It cannot run twice.
+        basicBlocksPass.emplace(context, m_unitGenerator, &m_typeResolver, m_logger);
+        passResult = basicBlocksPass->run(function, m_flags, basicBlocksValidationFailed);
         QQmlJSTypePropagator propagator(
                 m_unitGenerator, &m_typeResolver, m_logger, blocks, annotations);
         passResult = propagator.run(function);
@@ -1147,7 +1153,7 @@ QQmlJSAotFunction QQmlJSAotCompiler::compilePasses(
 
     QQmlJSOptimizations optimizer(
             m_unitGenerator, &m_typeResolver, m_logger, blocks, annotations,
-            basicBlocks.objectAndArrayDefinitions());
+            basicBlocksPass->objectAndArrayDefinitions());
     passResult = optimizer.run(function);
     if (m_logger->currentFunctionHasErrorOrSkip())
         return QQmlJSAotFunction();

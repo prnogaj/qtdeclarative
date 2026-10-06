@@ -819,13 +819,21 @@ QQmlJSScope::ConstPtr QQmlJSCodeGenerator::contextLocalType(int scope, int index
 }
 
 // The type of the C++ variable that holds a local of the given type. Generated code only
-// knows objects as QObject.
+// knows objects as QObject, and value types such as QPointF as QVariant, as it has no
+// headers for them.
 QQmlJSScope::ConstPtr QQmlJSCodeGenerator::contextLocalStorage(
         const QQmlJSScope::ConstPtr &type) const
 {
-    return type->isReferenceType()
-            ? m_typeResolver->qObjectType()
-            : m_typeResolver->storedType(type);
+    if (type->isReferenceType())
+        return m_typeResolver->qObjectType();
+
+    if (type->accessSemantics() == QQmlJSScope::AccessSemantics::Value
+            && !m_typeResolver->isNumeric(type) && type != m_typeResolver->boolType()
+            && type != m_typeResolver->stringType()) {
+        return m_typeResolver->varType();
+    }
+
+    return m_typeResolver->storedType(type);
 }
 
 // How a local of the given type is held in its C++ variable
@@ -914,9 +922,18 @@ void QQmlJSCodeGenerator::generate_LoadClosure(int value)
         INJECT_TRACE_INFO(generate_LoadClosure);
         if (m_state.accumulatorVariableOut.isEmpty())
             return;
+        const QString closure = u"aotContext->createClosure(%1)"_s.arg(value);
+
+        // A function is kept in a QVariant as the QJSValue it is. No need to go through the
+        // general conversion of JavaScript values to find that out.
+        if (m_state.accumulatorOut().isStoredIn(m_typeResolver->varType())) {
+            m_body += m_state.accumulatorVariableOut + u" = QVariant::fromValue("_s + closure
+                    + u");\n"_s;
+            return;
+        }
+
         m_body += m_state.accumulatorVariableOut + u" = "_s
-                + conversion(m_typeResolver->jsValueType(), m_state.accumulatorOut(),
-                             u"aotContext->createClosure(%1)"_s.arg(value))
+                + conversion(m_typeResolver->jsValueType(), m_state.accumulatorOut(), closure)
                 + u";\n"_s;
         return;
     }
