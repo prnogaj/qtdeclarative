@@ -25,16 +25,47 @@ QQmlJSLinterTypePropagator::QQmlJSLinterTypePropagator(
 /*!
  * \internal
  * Where the members of the object literal defined by the instruction at \a instructionOffset
- * are written, the one called \a name is somewhere after the start of the literal. Point at it
- * if we find it, and at the literal otherwise.
+ * are written, the one called \a name is somewhere after the start of the literal. Point at
+ * its name, or at its value if \a part says so, if we find it, and at the literal otherwise.
  */
 QQmlJS::SourceLocation QQmlJSLinterTypePropagator::objectLiteralMemberLocation(
-        int instructionOffset, const QString &name) const
+        int instructionOffset, const QString &name, MemberPart part) const
 {
     QQmlJS::SourceLocation location = sourceLocation(instructionOffset);
     const QString code = m_logger->code();
     if (!location.isValid() || location.offset >= code.size())
         return location;
+
+    // The instruction may be attributed to the start of the literal or to something inside
+    // of it, for example the last member. In the latter case, go back to the brace that opens
+    // the literal.
+    qsizetype start = location.offset;
+    while (start < code.size() && (code[start].isSpace() || code[start] == u'('))
+        ++start;
+    if (start >= code.size() || code[start] != u'{') {
+        int depth = 0;
+        for (start = qsizetype(location.offset) - 1; start >= 0; --start) {
+            const QChar c = code[start];
+            if (c == u'}') {
+                ++depth;
+            } else if (c == u'{') {
+                if (depth == 0)
+                    break;
+                --depth;
+            }
+        }
+        if (start < 0)
+            return location;
+
+        // Count the lines and columns back to there.
+        for (qsizetype i = location.offset; i > start; --i) {
+            if (code[i - 1] == u'\n')
+                --location.startLine;
+        }
+        const qsizetype lineStart = code.lastIndexOf(u'\n', start);
+        location.startColumn = quint32(start - lineStart);
+        location.offset = quint32(start);
+    }
 
     static const qsizetype searchLimit = 4096;
     const QStringView text = QStringView(code).mid(location.offset, searchLimit);
@@ -54,6 +85,41 @@ QQmlJS::SourceLocation QQmlJSLinterTypePropagator::objectLiteralMemberLocation(
             ++colon;
         if (colon >= text.size() || text[colon] != u':')
             continue;
+
+        if (part == MemberValue) {
+            // The value is what follows the colon, up to the comma or the brace that ends the
+            // member. Strings and nested brackets may contain those, too.
+            qsizetype valueBegin = colon + 1;
+            while (valueBegin < text.size() && text[valueBegin].isSpace())
+                ++valueBegin;
+            qsizetype valueEnd = valueBegin;
+            int depth = 0;
+            QChar quote;
+            for (; valueEnd < text.size(); ++valueEnd) {
+                const QChar c = text[valueEnd];
+                if (!quote.isNull()) {
+                    if (c == u'\\')
+                        ++valueEnd;
+                    else if (c == quote)
+                        quote = QChar();
+                } else if (c == u'"' || c == u'\'' || c == u'`') {
+                    quote = c;
+                } else if (c == u'(' || c == u'[' || c == u'{') {
+                    ++depth;
+                } else if (c == u')' || c == u']' || c == u'}') {
+                    if (depth-- == 0)
+                        break;
+                } else if (c == u',' && depth == 0) {
+                    break;
+                }
+            }
+            while (valueEnd > valueBegin && text[valueEnd - 1].isSpace())
+                --valueEnd;
+            if (valueEnd > valueBegin) {
+                begin = valueBegin;
+                end = valueEnd;
+            }
+        }
 
         for (qsizetype j = 0; j < begin; ++j) {
             if (text[j] == u'\n') {
@@ -123,7 +189,8 @@ void QQmlJSLinterTypePropagator::checkStructuredValue(
                                   name, target->internalName(), propertyType->internalName(),
                                   member.containedType()->internalName()),
                           qmlStructuredValueCoercion,
-                          objectLiteralMemberLocation(literal->instructionOffset, name));
+                          objectLiteralMemberLocation(
+                                  literal->instructionOffset, name, MemberValue));
         }
 
         // A member can be an object literal that becomes a structured value in turn.
