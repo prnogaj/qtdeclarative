@@ -31,6 +31,7 @@ QQmlJSCompilePass::BlocksAndAnnotations QQmlJSTypePropagator::run(const Function
     m_function = function;
     m_returnType = m_function->returnType;
     m_loadedLocals.clear();
+    m_objectLiterals.clear();
 
     // A closure analyzed while its outer function is being propagated shares the transaction
     // and the merge cache of the outer function.
@@ -2442,6 +2443,15 @@ void QQmlJSTypePropagator::generate_DefineObjectLiteral(int internalClassId, int
     }
 
     setAccumulator(m_typeResolver->operationType(m_typeResolver->variantMapType()));
+
+    // Remember what the object consists of, for whoever wants to check it against the type it
+    // ends up as. The registers may hold something else by then.
+    ObjectLiteral literal;
+    literal.internalClassId = internalClassId;
+    literal.instructionOffset = currentInstructionOffset();
+    for (int i = 0; i < classSize; ++i)
+        literal.members.append(m_state.registers[args + i].content);
+    m_objectLiterals.insert(m_state.accumulatorOut(), literal);
 }
 
 void QQmlJSTypePropagator::generate_CreateClass(int classIndex, int heritage, int computedNames)

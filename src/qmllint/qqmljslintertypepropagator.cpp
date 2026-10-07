@@ -22,9 +22,97 @@ QQmlJSLinterTypePropagator::QQmlJSLinterTypePropagator(
 {
 }
 
+/*!
+ * \internal
+ * Where the members of the object literal defined by the instruction at \a instructionOffset
+ * are written, the one called \a name is somewhere after the start of the literal. Point at it
+ * if we find it, and at the literal otherwise.
+ */
+QQmlJS::SourceLocation QQmlJSLinterTypePropagator::objectLiteralMemberLocation(
+        int instructionOffset, const QString &name) const
+{
+    QQmlJS::SourceLocation location = sourceLocation(instructionOffset);
+    const QString code = m_logger->code();
+    if (!location.isValid() || location.offset >= code.size())
+        return location;
+
+    static const qsizetype searchLimit = 4096;
+    const QStringView text = QStringView(code).mid(location.offset, searchLimit);
+    for (qsizetype i = text.indexOf(name); i >= 0; i = text.indexOf(name, i + 1)) {
+        // The name as a whole, with or without quotes, and then a colon
+        qsizetype begin = i;
+        qsizetype end = i + name.size();
+        if (begin > 0 && (text[begin - 1].isLetterOrNumber() || text[begin - 1] == u'_'))
+            continue;
+        if (begin > 0 && end < text.size() && (text[begin - 1] == u'"' || text[begin - 1] == u'\'')
+                && text[end] == text[begin - 1]) {
+            --begin;
+            ++end;
+        }
+        qsizetype colon = end;
+        while (colon < text.size() && text[colon].isSpace())
+            ++colon;
+        if (colon >= text.size() || text[colon] != u':')
+            continue;
+
+        for (qsizetype j = 0; j < begin; ++j) {
+            if (text[j] == u'\n') {
+                ++location.startLine;
+                location.startColumn = 1;
+            } else {
+                ++location.startColumn;
+            }
+        }
+        location.offset += begin;
+        location.length = end - begin;
+        return location;
+    }
+    return location;
+}
+
+/*!
+ * \internal
+ * If \a value is an object literal that becomes a value of the structured value type
+ * \a target, checks that the members it names are properties of that type. Something else
+ * cannot be assigned: the conversion fails as a whole at run time.
+ */
+void QQmlJSLinterTypePropagator::checkStructuredValue(
+        QQmlJSRegisterContent value, const QQmlJSScope::ConstPtr &target, int depth)
+{
+    if (depth > 8 || !value.isValid() || !target || !target->isStructured()
+            || target->accessSemantics() != QQmlJSScope::AccessSemantics::Value) {
+        return;
+    }
+
+    const auto literal = m_objectLiterals.constFind(value);
+    if (literal == m_objectLiterals.constEnd())
+        return;
+
+    for (qsizetype i = 0, end = literal->members.size(); i < end; ++i) {
+        const QString name
+                = m_jsUnitGenerator->jsClassMember(literal->internalClassId, int(i));
+        if (!target->hasProperty(name)) {
+            const QQmlJS::SourceLocation location
+                    = objectLiteralMemberLocation(literal->instructionOffset, name);
+            std::optional<QQmlJSFixSuggestion> suggestion = QQmlJSUtils::didYouMean(
+                    name, target->properties().keys(), m_logger->filePath(), location);
+            m_logger->log(u"Member \"%1\" not found on type \"%2\""_s.arg(
+                                  name, target->internalName()),
+                          qmlMissingProperty, location, true, true, suggestion);
+            continue;
+        }
+
+        // A member can be an object literal that becomes a structured value in turn.
+        checkStructuredValue(literal->members[i], target->property(name).type(), depth + 1);
+    }
+}
+
 void QQmlJSLinterTypePropagator::generate_Ret()
 {
     QQmlJSTypePropagator::generate_Ret();
+
+    if (m_returnType.isValid())
+        checkStructuredValue(m_state.accumulatorIn(), m_returnType.containedType());
 
     const auto accumulatorIn = m_state.accumulatorIn();
     if (m_function->isSignalHandler) {
@@ -162,6 +250,10 @@ void QQmlJSLinterTypePropagator::generate_StoreProperty(int nameIndex, int base)
     const bool isAttached = callBase.variant() == QQmlJSRegisterContent::Attachment;
 
     checkWrite(callBase, propertyName);
+
+    const QQmlJSRegisterContent written = m_typeResolver->memberType(callBase, propertyName);
+    if (written.isProperty())
+        checkStructuredValue(m_state.accumulatorIn(), written.containedType());
 
     QQmlSA::PassManagerPrivate::get(m_passManager)->analyzeWrite(
             QQmlJSScope::createQQmlSAElement(callBase.containedType()),
@@ -699,6 +791,10 @@ void QQmlJSLinterTypePropagator::propagateCall(const QList<QQmlJSMetaMethod> &me
     const QQmlJSMetaMethod match = bestMatchForCall(methods, argc, argv, &errors);
     if (!match.isValid())
         return;
+
+    const auto parameters = match.parameters();
+    for (int i = 0; i < argc && i < parameters.size(); ++i)
+        checkStructuredValue(m_state.registers[argv + i].content, parameters[i].type());
 
     const QQmlSA::Element saBaseType = QQmlJSScope::createQQmlSAElement(scope.containedType());
     const QQmlSA::SourceLocation saLocation{

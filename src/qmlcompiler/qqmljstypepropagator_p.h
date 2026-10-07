@@ -313,6 +313,16 @@ protected:
 
     bool isCapturedCopy(QQmlJSRegisterContent content, bool canWriteBack = false);
 
+    // The object literals defined so far, by the content they have produced: the class that
+    // names the members, and the contents of the members in the order of that class.
+    struct ObjectLiteral
+    {
+        int internalClassId = -1;
+        int instructionOffset = -1;
+        QList<QQmlJSRegisterContent> members;
+    };
+    QHash<QQmlJSRegisterContent, ObjectLiteral> m_objectLiterals;
+
     // The value types and lists of values loaded from locals of contexts, with the scope and
     // the index of the local
     QHash<QQmlJSRegisterContent, std::pair<int, int>> m_loadedLocals;

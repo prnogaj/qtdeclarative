@@ -1465,6 +1465,19 @@ void TestQmllint::dirtyQmlCode_data()
                .addExpected("Member \"intervall\" not found on type \"Timer\""_L1, 12, 61)
                .build()
             << defaultOptions;
+    // QTBUG-139463: an object literal that becomes a structured value can only name
+    // properties of that type.
+    QTest::newRow("structuredValueMembers")
+            << QStringLiteral("structuredValueMembers.qml")
+            << ResultBuilder()
+               .addExpected("Member \"nonexistentProp\" not found on type \"MyStructuredType\""_L1, 13, 9)
+               .addExpected("Member \"nmber\" not found on type \"MyStructuredType\""_L1, 16, 55)
+               .addExpected("Member \"thruth\" not found on type \"MyStructuredType\""_L1, 18, 69)
+               .addExpected("Member \"extra\" not found on type \"MyStructuredType\""_L1, 21, 29)
+               .addExpected("Member \"wrong\" not found on type \"MyStructuredType\""_L1, 25, 40)
+               .addExpected("Member \"alsoWrong\" not found on type \"MyStructuredType\""_L1, 26, 39)
+               .build()
+            << defaultOptions;
     QTest::newRow("lintInnerFunctionsToo")
             << QStringLiteral("lintInnerFunctionsToo.qml")
             << ResultBuilder()
@@ -3218,6 +3231,8 @@ void TestQmllint::cleanQmlCode_data()
 
     QTest::newRow("2Behavior") << QStringLiteral("2behavior.qml") << defaultOptions;
     QTest::newRow("futureThen") << QStringLiteral("futureThen.qml") << defaultOptions;
+    QTest::newRow("structuredValueMembersClean")
+            << QStringLiteral("structuredValueMembersClean.qml") << defaultOptions;
     QTest::newRow("closureMembersClean")
             << QStringLiteral("closureMembersClean.qml") << defaultOptions;
     QTest::newRow("Accessible") << QStringLiteral("accessible.qml") << defaultOptions;

@@ -1,0 +1,3 @@
+module StructuredValues
+typeinfo structuredvalues.qmltypes
+import QtQml
