@@ -1478,6 +1478,23 @@ void TestQmllint::dirtyQmlCode_data()
                .addExpected("Member \"alsoWrong\" not found on type \"MyStructuredType\""_L1, 26, 39)
                .build()
             << defaultOptions;
+    // What is coerced on the way into a structured value is only reported on request.
+    {
+        CallQmllintOptions withCoercion;
+        withCoercion.categorySeverityOverrides.insert(
+                u"structured-value-coercion"_s, QQmlJS::WarningSeverity::Warning);
+        QTest::newRow("structuredValueCoercion")
+                << QStringLiteral("structuredValueCoercion.qml")
+                << ResultBuilder()
+                   .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The QString assigned to it is coerced"_L1, 10, 9)
+                   .addExpected("Member \"truth\" of \"MyStructuredType\" has type bool. The QString assigned to it is coerced"_L1, 11, 9)
+                   .addExpected("Member \"label\" of \"MyOuterType\" has type QString. The int assigned to it is coerced"_L1, 15, 37)
+                   .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The bool assigned to it is coerced"_L1, 15, 56)
+                   .addExpected("Member \"truth\" of \"MyStructuredType\" has type bool. The int assigned to it is coerced"_L1, 15, 70)
+                   .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The QString assigned to it is coerced"_L1, 18, 31)
+                   .build()
+                << withCoercion;
+    }
     QTest::newRow("lintInnerFunctionsToo")
             << QStringLiteral("lintInnerFunctionsToo.qml")
             << ResultBuilder()
@@ -3231,6 +3248,9 @@ void TestQmllint::cleanQmlCode_data()
 
     QTest::newRow("2Behavior") << QStringLiteral("2behavior.qml") << defaultOptions;
     QTest::newRow("futureThen") << QStringLiteral("futureThen.qml") << defaultOptions;
+    // The category for coercions is off by default.
+    QTest::newRow("structuredValueCoercionOff")
+            << QStringLiteral("structuredValueCoercion.qml") << defaultOptions;
     QTest::newRow("structuredValueMembersClean")
             << QStringLiteral("structuredValueMembersClean.qml") << defaultOptions;
     QTest::newRow("closureMembersClean")

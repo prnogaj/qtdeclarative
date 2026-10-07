@@ -157,6 +157,9 @@ warning levels.
     X(qmlStalePropertyRead, "stale-property-read", "StalePropertyRead",                            \
       "Warn about bindings reading non-constant and non-notifiable properties", Warning,           \
       NonEssential)                                                                                \
+    X(qmlStructuredValueCoercion, "structured-value-coercion", "StructuredValueCoercion",          \
+      "Warn about values that are coerced when an object literal becomes a structured value",      \
+      Disable, NonEssential)                                                                       \
     X(qmlSyntax, "syntax", "Syntax", "Syntax errors", Warning, Essential)                          \
     X(qmlSyntaxDuplicateIds, "syntax.duplicate-ids", "", "ID duplication", Error, NonEssential)    \
     X(qmlSyntaxIdQuotation, "syntax.id-quotation", "", "ID quotation", Warning, NonEssential)      \

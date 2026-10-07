@@ -102,8 +102,32 @@ void QQmlJSLinterTypePropagator::checkStructuredValue(
             continue;
         }
 
+        const QQmlJSScope::ConstPtr propertyType = target->property(name).type();
+
+        // JavaScript turns a string into a number or a boolean, and the other way round, without
+        // complaining. For "false" becoming true, that is rarely what was meant.
+        const QQmlJSRegisterContent member = literal->members[i];
+        const auto kindOf = [this](const QQmlJSScope::ConstPtr &type) {
+            if (!type)
+                return 0;
+            if (type == m_typeResolver->stringType())
+                return 1;
+            if (type == m_typeResolver->boolType())
+                return 2;
+            return m_typeResolver->isNumeric(type) ? 3 : 0;
+        };
+        const int memberKind = member.isValid() ? kindOf(member.containedType()) : 0;
+        const int propertyKind = kindOf(propertyType);
+        if (memberKind != 0 && propertyKind != 0 && memberKind != propertyKind) {
+            m_logger->log(u"Member \"%1\" of \"%2\" has type %3. The %4 assigned to it is coerced"_s.arg(
+                                  name, target->internalName(), propertyType->internalName(),
+                                  member.containedType()->internalName()),
+                          qmlStructuredValueCoercion,
+                          objectLiteralMemberLocation(literal->instructionOffset, name));
+        }
+
         // A member can be an object literal that becomes a structured value in turn.
-        checkStructuredValue(literal->members[i], target->property(name).type(), depth + 1);
+        checkStructuredValue(member, propertyType, depth + 1);
     }
 }
 
