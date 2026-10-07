@@ -4909,6 +4909,60 @@ void tst_qmlls_utils::completions_data()
             << testFile("completions/signalHandlerSnippets.qml") << 14 << 21
             << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet } }
             << QStringList{  };
+
+    // QTBUG-139463: the members of an object literal that becomes a structured value are the
+    // properties of that type.
+    QTest::newRow("structuredValue-emptyLiteral")
+            << testFile("completions/structuredValues.qml") << 9 << 41
+            << ExpectedCompletions{ { "number"_L1, CompletionItemKind::Property },
+                                    { "truth"_L1, CompletionItemKind::Property },
+                                    { "number: value, truth: value"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"count"_s };
+
+    QTest::newRow("structuredValue-firstMember")
+            << testFile("completions/structuredValues.qml") << 10 << 42
+            << ExpectedCompletions{ { "number"_L1, CompletionItemKind::Property },
+                                    { "truth"_L1, CompletionItemKind::Property },
+                                    { "number: value, truth: value"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"count"_s };
+
+    QTest::newRow("structuredValue-secondMember")
+            << testFile("completions/structuredValues.qml") << 11 << 54
+            << ExpectedCompletions{ { "truth"_L1, CompletionItemKind::Property } }
+            << QStringList{ u"number"_s, u"number: value, truth: value"_s };
+
+    QTest::newRow("structuredValue-memberValue")
+            << testFile("completions/structuredValues.qml") << 12 << 50
+            << ExpectedCompletions{ { "count"_L1, CompletionItemKind::Property } }
+            << QStringList{ u"truth"_s };
+
+    QTest::newRow("structuredValue-nestedLiteral")
+            << testFile("completions/structuredValues.qml") << 13 << 60
+            << ExpectedCompletions{ { "number"_L1, CompletionItemKind::Property },
+                                    { "truth"_L1, CompletionItemKind::Property },
+                                    { "number: value, truth: value"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"label"_s };
+
+    QTest::newRow("structuredValue-returned")
+            << testFile("completions/structuredValues.qml") << 17 << 21
+            << ExpectedCompletions{ { "number"_L1, CompletionItemKind::Property },
+                                    { "truth"_L1, CompletionItemKind::Property },
+                                    { "number: value, truth: value"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("structuredValue-assigned")
+            << testFile("completions/structuredValues.qml") << 20 << 31
+            << ExpectedCompletions{ { "number"_L1, CompletionItemKind::Property },
+                                    { "truth"_L1, CompletionItemKind::Property },
+                                    { "number: value, truth: value"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("structuredValue-argument")
+            << testFile("completions/structuredValues.qml") << 21 << 29
+            << ExpectedCompletions{ { "number"_L1, CompletionItemKind::Property },
+                                    { "truth"_L1, CompletionItemKind::Property },
+                                    { "number: value, truth: value"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
 }
 
 void tst_qmlls_utils::completions()

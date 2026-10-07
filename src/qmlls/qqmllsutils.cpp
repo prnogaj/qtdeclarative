@@ -2106,6 +2106,129 @@ static CallbackSignature namedSignature(const ResolvedCallback &resolved)
     return result;
 }
 
+// The name of a member of an object literal, written as identifier or as string
+static QString nameOfObjectLiteralMember(const DomItem &scriptProperty)
+{
+    const DomItem name = scriptProperty.field(Fields::name);
+    QString result = name.field(Fields::identifier).value().toString();
+    if (result.isEmpty())
+        result = name.field(Fields::value).value().toString();
+    return result;
+}
+
+/*!
+\internal
+If the object literal \a scriptObject becomes a value of a structured value type where it is
+written, returns that type: as the value of a property binding, on the right of an assignment,
+as argument of a method, as what a function with a declared return type returns, or as a member
+of another such literal.
+*/
+QQmlJSScope::ConstPtr structuredTypeOfObjectLiteral(const DomItem &scriptObject, int depth)
+{
+    if (depth > 8 || scriptObject.internalKind() != DomType::ScriptObject)
+        return {};
+
+    const auto qmlFile = scriptObject.containingFile().ownerAs<QmlFile>();
+    if (!qmlFile || !qmlFile->typeResolver())
+        return {};
+    const auto resolver = qmlFile->typeResolver();
+
+    const auto structured = [](const QQmlJSScope::ConstPtr &type) {
+        return (type && type->isStructured()
+                && type->accessSemantics() == QQmlJSScope::AccessSemantics::Value)
+                ? type : QQmlJSScope::ConstPtr();
+    };
+
+    DomItem value = scriptObject;
+    DomItem parent = scriptObject.directParent();
+    while (parent.internalKind() == DomType::ScriptParenthesizedExpression) {
+        value = parent;
+        parent = parent.directParent();
+    }
+
+    switch (parent.internalKind()) {
+    case DomType::ScriptExpression: {
+        // property someType p: ({ ... })
+        const DomItem binding = parent.directParent();
+        if (binding.internalKind() != DomType::Binding)
+            return {};
+        const auto owner = resolveExpressionType(binding, ResolveOwnerType);
+        if (!owner || !owner->semanticScope || !owner->name)
+            return {};
+        return structured(owner->semanticScope->property(*owner->name).type());
+    }
+    case DomType::ScriptProperty: {
+        // { inner: { ... } }
+        const DomItem outer = parent.filterUp(
+                [](DomType type, const DomItem &) { return type == DomType::ScriptObject; },
+                FilterUpOptions::ReturnOuter);
+        const QQmlJSScope::ConstPtr outerType = structuredTypeOfObjectLiteral(outer, depth + 1);
+        if (!outerType)
+            return {};
+        return structured(outerType->property(nameOfObjectLiteralMember(parent)).type());
+    }
+    case DomType::ScriptBinaryExpression: {
+        // someObject.someProperty = { ... }
+        if (isFieldMemberExpression(parent) || parent.field(Fields::right) != value)
+            return {};
+        const auto left = resolveExpressionType(
+                parent.field(Fields::left), ResolveActualTypeForFieldMemberExpression);
+        return left ? structured(left->semanticScope) : QQmlJSScope::ConstPtr();
+    }
+    case DomType::ScriptReturnStatement: {
+        // function f(): someType { return { ... } }
+        const DomItem method = parent.filterUp(
+                [](DomType type, const DomItem &) { return type == DomType::MethodInfo; },
+                FilterUpOptions::ReturnOuter);
+        const auto info = method.as<MethodInfo>();
+        if (!info || info->typeName.isEmpty())
+            return {};
+        return structured(resolver->typeForName(info->typeName));
+    }
+    default:
+        break;
+    }
+
+    // someObject.someMethod({ ... })
+    DomItem call = parent;
+    for (int i = 0; i < 2 && call && call.internalKind() != DomType::ScriptCallExpression; ++i)
+        call = call.directParent();
+    if (call && call.internalKind() == DomType::ScriptCallExpression) {
+        const DomItem arguments = call.field(Fields::arguments);
+        int position = -1;
+        for (int i = 0; i < arguments.indexes(); ++i) {
+            if (arguments.index(i) == value) {
+                position = i;
+                break;
+            }
+        }
+        const auto callee = resolveExpressionType(call.field(Fields::callee), ResolveOwnerType);
+        if (position < 0 || !callee || !callee->semanticScope || !callee->name
+                || callee->type != MethodIdentifier) {
+            return {};
+        }
+        const auto methods = callee->semanticScope->methods(*callee->name);
+        if (methods.isEmpty() || methods.front().parameters().size() <= position)
+            return {};
+        return structured(methods.front().parameters().at(position).type());
+    }
+
+    return {};
+}
+
+/*!
+\internal
+Returns the names of the members the object literal \a scriptObject already has.
+*/
+QStringList membersOfObjectLiteral(const DomItem &scriptObject)
+{
+    QStringList result;
+    const DomItem properties = scriptObject.field(Fields::properties);
+    for (int i = 0; i < properties.indexes(); ++i)
+        result.append(nameOfObjectLiteralMember(properties.index(i)));
+    return result;
+}
+
 /*!
 \internal
 Returns whether \a expression is the promise that then(), catch() or finally() of a QFuture or

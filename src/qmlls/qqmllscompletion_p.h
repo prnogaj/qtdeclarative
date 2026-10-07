@@ -100,6 +100,11 @@ private:
                           BackInsertIterator result) const;
     void signalHandlerSnippets(const QQmlLSCompletionPosition &positionInfo,
                                BackInsertIterator result) const;
+    void structuredValueMembers(const DomItem &scriptObject, const QString &memberBeingWritten,
+                                BackInsertIterator result) const;
+    bool insideObjectLiteralMemberName(const DomItem &scriptProperty,
+                                       const QQmlLSCompletionPosition &positionInfo,
+                                       BackInsertIterator result) const;
 
     void suggestBindingCompletion(const DomItem &itemAtPosition, BackInsertIterator it) const;
 

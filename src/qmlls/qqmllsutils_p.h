@@ -295,6 +295,8 @@ struct CallbackSignature
 std::optional<CallbackSignature> callbackSignatureForArgument(const DomItem &argument);
 std::optional<CallbackSignature> signalHandlerSignature(const DomItem &binding);
 bool isPromiseExpression(const DomItem &expression);
+QQmlJSScope::ConstPtr structuredTypeOfObjectLiteral(const DomItem &scriptObject, int depth = 0);
+QStringList membersOfObjectLiteral(const DomItem &scriptObject);
 bool isValidEcmaScriptIdentifier(QStringView view);
 
 std::pair<QString, QStringList> cmakeBuildCommand(const QString &path, int cmakeJobs = 0);

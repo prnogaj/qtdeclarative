@@ -1864,6 +1864,80 @@ QQmlLSCompletion::completions(const DomItem &currentItem,
 
 /*!
 \internal
+If the object literal \a scriptObject becomes a structured value, suggests the properties of
+that type it does not have yet as its members, and all of them together as a snippet.
+*/
+void QQmlLSCompletion::structuredValueMembers(const DomItem &scriptObject,
+                                              const QString &memberBeingWritten,
+                                              BackInsertIterator result) const
+{
+    const QQmlJSScope::ConstPtr type = QQmlLSUtils::structuredTypeOfObjectLiteral(scriptObject);
+    if (!type)
+        return;
+
+    // The member the cursor is in may be changed into any other one, or stay what it is.
+    QStringList existing = QQmlLSUtils::membersOfObjectLiteral(scriptObject);
+    existing.removeOne(memberBeingWritten);
+    QStringList missing;
+    const auto properties = type->properties();
+    for (auto it = properties.constBegin(), end = properties.constEnd(); it != end; ++it) {
+        if (!it->isWritable() || existing.contains(it.key()))
+            continue;
+        missing.append(it.key());
+    }
+    missing.sort();
+
+    QByteArray label;
+    QByteArray text;
+    for (qsizetype i = 0; i < missing.size(); ++i) {
+        const QByteArray name = missing[i].toUtf8();
+        CompletionItem completion;
+        completion.label = name;
+        completion.kind = CompletionItemKind::Property;
+        completion.detail = properties.value(missing[i]).typeName().toUtf8();
+        result = completion;
+
+        label += (i == 0 ? "" : ", ") + name + ": value";
+        text += (i == 0 ? "" : ", ") + name + ": ${" + QByteArray::number(i + 1) + ':' + name
+                + '}';
+    }
+    if (missing.size() > 1)
+        result = makeSnippet(label, text);
+}
+
+/*!
+\internal
+If the cursor is in the name of the member \a scriptProperty of an object literal that becomes a
+structured value, suggests the properties of that type and returns true.
+*/
+bool QQmlLSCompletion::insideObjectLiteralMemberName(
+        const DomItem &scriptProperty, const QQmlLSCompletionPosition &positionInfo,
+        BackInsertIterator result) const
+{
+    const DomItem scriptObject = scriptProperty.filterUp(
+            [](DomType type, const DomItem &) { return type == DomType::ScriptObject; },
+            FilterUpOptions::ReturnOuter);
+    if (!scriptObject || !QQmlLSUtils::structuredTypeOfObjectLiteral(scriptObject))
+        return false;
+
+    // Behind the name comes the value: any expression. A member written as a name alone is
+    // all name.
+    const DomItem name = scriptProperty.field(Fields::name);
+    const auto nameLocation = name ? FileLocations::treeOf(name) : FileLocations::Tree();
+    if (nameLocation && positionInfo.offset() > nameLocation->info().fullRegion.end()) {
+        suggestJSExpressionCompletion(positionInfo.itemAtPosition, result);
+        return true;
+    }
+
+    QString written = name.field(Fields::identifier).value().toString();
+    if (written.isEmpty())
+        written = name.field(Fields::value).value().toString();
+    structuredValueMembers(scriptObject, written, result);
+    return true;
+}
+
+/*!
+\internal
 The handler of a signal can be a function that takes the arguments of the signal. Offer that
 where the handler starts: right after the colon, in front of whatever is written there, or while
 the first word of it is being typed.
@@ -2044,8 +2118,12 @@ void QQmlLSCompletion::collectCompletions(const DomItem &currentItem,
             insideVariableDeclarationEntry(currentParent, positionInfo, result);
             return;
         case DomType::ScriptProperty:
+            // The name of a member of an object literal that becomes a structured value
+            if (insideObjectLiteralMemberName(currentParent, positionInfo, result))
+                return;
             // fallthrough: a ScriptProperty is a ScriptPattern but inside a JS Object. It gets the
             // same completions as a ScriptPattern.
+            Q_FALLTHROUGH();
         case DomType::ScriptPattern:
             insideScriptPattern(currentParent, positionInfo, result);
             return;
@@ -2097,8 +2175,10 @@ void QQmlLSCompletion::collectCompletions(const DomItem &currentItem,
 
         // TODO: Implement those statements.
         // In the meanwhile, suppress completions to avoid weird behaviors.
-        case DomType::ScriptArray:
         case DomType::ScriptObject:
+            structuredValueMembers(currentParent, QString(), result);
+            return;
+        case DomType::ScriptArray:
         case DomType::ScriptElision:
         case DomType::ScriptArrayEntry:
             return;
