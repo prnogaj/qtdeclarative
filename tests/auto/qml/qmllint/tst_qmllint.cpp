@@ -1492,7 +1492,7 @@ void TestQmllint::dirtyQmlCode_data()
                    .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The bool assigned to it is coerced"_L1, 15, 64)
                    .addExpected("Member \"truth\" of \"MyStructuredType\" has type bool. The int assigned to it is coerced"_L1, 15, 77)
                    .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The QString assigned to it is coerced"_L1, 18, 26)
-                   .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The number assigned to it is no int and is coerced"_L1, 25, 52)
+                   .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The number assigned to it is no int and is coerced"_L1, 24, 52)
                    .build()
                 << withCoercion;
     }

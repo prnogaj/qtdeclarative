@@ -11,7 +11,7 @@ QtObject {
         truth: "false"
     })
 
-    property myStructuredType fine: ({ number: 42.5, truth: true })
+    property myStructuredType fine: ({ number: 42, truth: true })
     property myOuterType nested: ({ label: 5, inner: { number: true, truth: 0 } })
 
     function fromProperty(): myStructuredType {
