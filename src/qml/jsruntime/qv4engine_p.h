@@ -217,6 +217,7 @@ public:
         PromiseProto,
         VariantProto,
         VariantAssociationProto,
+        FutureProto,
         SequenceProto,
         SharedArrayBufferProto,
         ArrayBufferProto,
@@ -340,6 +341,7 @@ public:
     Object *promisePrototype() const { return reinterpret_cast<Object *>(jsObjects + PromiseProto); }
     Object *variantPrototype() const { return reinterpret_cast<Object *>(jsObjects + VariantProto); }
     Object *variantAssociationPrototype() const { return reinterpret_cast<Object *>(jsObjects + VariantAssociationProto); }
+    Object *futurePrototype() const { return reinterpret_cast<Object *>(jsObjects + FutureProto); }
     Object *sequencePrototype() const { return reinterpret_cast<Object *>(jsObjects + SequenceProto); }
 
     Object *sharedArrayBufferPrototype() const { return reinterpret_cast<Object *>(jsObjects + SharedArrayBufferProto); }
@@ -627,6 +629,9 @@ public:
     Promise::ReactionHandler *getPromiseReactionHandler();
 
     Heap::Object *newVariantObject(const QMetaType type, const void *data);
+#if QT_CONFIG(future)
+    Heap::Object *newFutureObject(const QMetaType type, const void *data);
+#endif
 
     Heap::Object *newForInIteratorObject(Object *o);
     Heap::Object *newSetIteratorObject(Object *o);

@@ -82,8 +82,18 @@ private:
 
     void analyzeFunction(const QV4::Compiler::Context *context,
                          QQmlJSCompilePass::Function *function);
+    const QV4::Compiler::Context *initializeClosure(
+            int functionIndex, const QQmlJSCompilePass::Function *outer,
+            const QList<QQmlJSRegisterContent> &argumentTypes,
+            const QQmlJSScope::ConstPtr &returnType, QQmlJSCompilePass::Function *closure);
     const QQmlJS::LinterContext &m_context;
     QSet<IdMemberShadow> m_idMemberShadows;
+
+    // Inner functions are linted twice over: on their own, like any other function, and as
+    // closures of the function that creates them, where we know more about their arguments
+    // and the variables they capture. Whichever comes first reports.
+    QSet<const QV4::Compiler::Context *> m_lintedOnTheirOwn;
+    QSet<const QV4::Compiler::Context *> m_lintedAsClosures;
 };
 
 QT_END_NAMESPACE

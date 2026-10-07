@@ -358,6 +358,8 @@ void TestQmlformat::qml_data()
                                           << "ecmaScriptClassInQml.formatted.qml";
     QTest::newRow("arrowFunctionWithBinding") << "arrowFunctionWithBinding.qml"
                                               << "arrowFunctionWithBinding.formatted.qml";
+    QTest::newRow("typedArrowFunctions") << "typedArrowFunctions.qml"
+                                         << "typedArrowFunctions.formatted.qml";
     QTest::newRow("blanklinesAfterComment") << "blanklinesAfterComment.qml"
                                             << "blanklinesAfterComment.formatted.qml";
     QTest::newRow("pragmaValueList") << "pragma.qml"

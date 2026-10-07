@@ -1,0 +1,2 @@
+module ModuleWithStructuredValue
+typeinfo plugin.qmltypes

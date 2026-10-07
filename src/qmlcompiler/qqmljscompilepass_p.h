@@ -99,8 +99,120 @@ public:
         InstructionAnnotations annotations;
     };
 
+    struct Function;
+
+    // What the passes of a function and of the closures inlined into it share.
+    //
+    // A closure that is passed directly to a method we generate inline code for is compiled
+    // into a C++ lambda inside the function that creates it. The variables it captures are
+    // locals of the call contexts of the functions around it. They are C++ variables, declared
+    // where the context is created: in the function body, or in the lambda of a closure that
+    // needs a context of its own because its variables are captured in turn.
+    struct ClosureSupport
+    {
+        struct Closure
+        {
+            // Types of the arguments the closure is called with
+            QList<QQmlJSRegisterContent> argumentTypes;
+
+            // What the caller converts the result to (void if it ignores it), or what the
+            // closure returns if the caller takes whatever that is.
+            QQmlJSScope::ConstPtr returnType;
+
+            // Filled in before the code for the outer function is generated
+            QList<QQmlJSScope::ConstPtr> argumentStorage;
+            QQmlJSScope::ConstPtr returnStorage;
+            QString code;
+            QStringList includes;
+        };
+
+        virtual ~ClosureSupport() = default;
+
+        // The linter only wants to know the types. It does not care whether code can be
+        // generated for what it finds, so the restrictions that exist for the sake of the
+        // generated code do not apply to it.
+        bool analysisOnly = false;
+
+        // Run the type propagation on the closure with the given index, as it would be called
+        // with the given arguments. This may change localTypes. If returnType is null, the
+        // return type is inferred from what the closure returns. Either way, it is stored in
+        // closures afterwards.
+        virtual bool analyzeClosure(
+                int functionIndex, const Function *outer,
+                const QList<QQmlJSRegisterContent> &argumentTypes,
+                const QQmlJSScope::ConstPtr &returnType) = 0;
+
+        // A local of a JavaScript context: the context and the index in it
+        using Local = std::pair<const void *, int>;
+
+        // The name of the C++ variable that holds the local
+        QString localName(const Local &local)
+        {
+            auto it = contextNumbers.find(local.first);
+            if (it == contextNumbers.end())
+                it = contextNumbers.insert(local.first, contextNumbers.size());
+            return QStringLiteral("c%1_local%2").arg(*it).arg(local.second);
+        }
+
+        // Contained types of the locals of the call contexts
+        QHash<Local, QQmlJSScope::ConstPtr> localTypes;
+        bool localTypesChanged = false;
+        QHash<const void *, int> contextNumbers;
+
+        // Closures to be inlined, by function index
+        QHash<int, Closure> closures;
+
+        // LoadClosure instructions whose result is only used for inlining:
+        // (identity of the function, instruction offset) -> function index of the closure
+        QHash<std::pair<const void *, int>, int> inlinedLoads;
+
+        // The same for the instructions that call the closure
+        QHash<std::pair<const void *, int>, int> inlinedCalls;
+
+        // All LoadClosure instructions we have seen, in the same form. Those that are not
+        // inlined create JavaScript function objects: The closure escapes.
+        QHash<std::pair<const void *, int>, int> loadedClosures;
+
+        // The closures that escape, by function index, with their return types. They are
+        // compiled as functions of their own.
+        QHash<int, QQmlJSScope::ConstPtr> escapingClosures;
+
+        // What we know about the arguments of closures that escape from where they are
+        // passed to, by function index. Used for parameters without type annotation.
+        QHash<int, QList<QQmlJSScope::ConstPtr>> contextualArgumentTypes;
+
+        // Instructions that change a value type or a list of values loaded from a local of a
+        // context: (identity of the function, instruction offset) -> (scope, index) of the
+        // local. A local holds a copy, and what is loaded from it is a copy of that. So the
+        // changed value has to be stored in the local again.
+        QHash<std::pair<const void *, int>, std::pair<int, int>> localWriteBacks;
+
+        // The contexts a closure that escapes is created in. Their locals have to live where a
+        // function object can find them: in JavaScript contexts, not in C++ variables. The
+        // other contexts, those that only inlined closures see, do not exist at run time.
+        QSet<const void *> realContexts;
+    };
+
     struct Function
     {
+        ClosureSupport *closureSupport = nullptr;
+        const void *identity = nullptr;
+        bool isInlinedClosure = false;
+
+        // The JavaScript contexts the function runs in, innermost first. The first one is
+        // the function's own if ownsContext is set. Otherwise the function has none, and the
+        // list starts with the context of the function around it.
+        QList<const void *> contextChain;
+        bool ownsContext = false;
+
+        // If the arguments are captured by a closure, they are locals of the function's own
+        // context, too, starting at this index.
+        int firstArgumentLocal = -1;
+
+        // If set, the function has no return type yet. The type propagator merges the types of
+        // all returned values into this.
+        QQmlJSScope::ConstPtr *inferredReturnType = nullptr;
+
         QQmlJSScopesById addressableScopes;
         QList<QQmlJSRegisterContent> argumentTypes;
         QList<QQmlJSRegisterContent> registerTypes;

@@ -4,6 +4,8 @@
 
 #include "qqmllsutils_p.h"
 
+#include <private/qqmljscallbacksignatures_p.h>
+
 #include <QtCore/qassert.h>
 #include <QtLanguageServer/private/qlanguageserverspectypes_p.h>
 #include <QtCore/qthreadpool.h>
@@ -1494,6 +1496,351 @@ resolveSignalHandlerParameterType(const DomItem &parameterDefinition, const QStr
 
 /*!
 \internal
+Experiment: the type of the elements of \a type if it is a list, for example the type of a
+property declared as \c{list<Item>}.
+*/
+static QQmlJSScope::ConstPtr elementTypeOfList(const QQmlJSScope::ConstPtr &type)
+{
+    if (!type || type->accessSemantics() != QQmlJSScope::AccessSemantics::Sequence)
+        return {};
+    return type->elementType();
+}
+
+namespace {
+// A callback that can be passed to a method or a signal, with the types of what it is called
+// with as far as we know them. A null type is one we know nothing about.
+struct ResolvedCallback
+{
+    struct Parameter
+    {
+        QString name;
+        QQmlJSScope::ConstPtr type;
+    };
+    QList<Parameter> parameters;
+    qsizetype minimumParameters = 1;
+    QQmlJSCallbackSignatures::Result result = QQmlJSCallbackSignatures::Result::Any;
+    std::shared_ptr<QQmlJSTypeResolver> resolver;
+};
+
+// What is known about an expression that then(), catch() and finally() can be called on
+struct Thenable
+{
+    QQmlJSCallbackSignatures::Receiver receiver = QQmlJSCallbackSignatures::Receiver::Promise;
+
+    // The result of the future, or what the promise is resolved with, if we know
+    QQmlJSScope::ConstPtr value;
+};
+} // namespace
+
+static std::optional<ExpressionType> resolveExpressionTypeForCallback(const DomItem &item);
+
+static QString calledMethodName(const DomItem &call)
+{
+    if (call.internalKind() != DomType::ScriptCallExpression)
+        return {};
+    const DomItem callee = call.field(Fields::callee);
+    if (!isFieldMemberExpression(callee))
+        return {};
+    return callee.field(Fields::right).field(Fields::identifier).value().toString();
+}
+
+/*!
+\internal
+If \a expression is a QFuture, or the promise that then(), catch() or finally() of one returns,
+directly or down a chain of such calls, says which and what it yields.
+
+A promise from then() is resolved with what the callback returns. We know that if the callback
+declares it.
+*/
+static std::optional<Thenable> thenableOf(const DomItem &expression, int depth = 0)
+{
+    if (depth > 16)
+        return {};
+
+    const auto qmlFile = expression.containingFile().ownerAs<QmlFile>();
+    if (!qmlFile || !qmlFile->typeResolver())
+        return {};
+    const auto resolver = qmlFile->typeResolver();
+
+    const QString method = calledMethodName(expression);
+    if (method == "then"_L1 || method == "catch"_L1 || method == "finally"_L1) {
+        const DomItem callee = expression.field(Fields::callee);
+        if (!thenableOf(callee.field(Fields::left), depth + 1))
+            return {};
+
+        Thenable promise;
+        const DomItem arguments = expression.field(Fields::arguments);
+        if (method == "then"_L1 && arguments.indexes() > 0) {
+            const DomItem callback = arguments.index(0);
+            if (callback.internalKind() == DomType::ScriptFunctionExpression) {
+                const DomItem returnType = callback.field(Fields::returnType);
+                const QString typeName = returnType.field(Fields::typeName).value().toString();
+                if (!typeName.isEmpty() && typeName != "void"_L1)
+                    promise.value = resolver->typeForName(typeName);
+            }
+        }
+        return promise;
+    }
+
+    const auto type = resolveExpressionTypeForCallback(expression);
+    if (!type || !type->semanticScope || !resolver->isFuture(type->semanticScope))
+        return {};
+    return Thenable{ QQmlJSCallbackSignatures::Receiver::Future,
+                     resolver->futureResultType(type->semanticScope) };
+}
+
+/*!
+\internal
+If \a argument is an argument of a call that takes a callback there, or the place where the
+first argument of such a call is about to be written, returns what we know about that callback.
+
+Signals describe their arguments themselves. For the methods of lists, futures and promises, see
+QQmlJSCallbackSignatures. If we cannot tell what a method of a list is called on, or it is a
+JavaScript array, the callback still has the usual parameters, of unknown type.
+*/
+static std::optional<ResolvedCallback> callbackOf(const DomItem &argument)
+{
+    using namespace QQmlJSCallbackSignatures;
+
+    DomItem child = argument;
+    DomItem call = argument;
+    for (int i = 0; i < 3 && call && call.internalKind() != DomType::ScriptCallExpression; ++i) {
+        child = call;
+        call = call.directParent();
+    }
+    if (!call || call.internalKind() != DomType::ScriptCallExpression)
+        return {};
+
+    const DomItem arguments = call.field(Fields::arguments);
+    int position = arguments.indexes() == 0 ? 0 : -1;
+    for (int i = 0; i < arguments.indexes(); ++i) {
+        const DomItem candidate = arguments.index(i);
+        if (candidate == argument || candidate == child) {
+            position = i;
+            break;
+        }
+    }
+    if (position < 0)
+        return {};
+
+    const QString method = calledMethodName(call);
+    if (method.isEmpty())
+        return {};
+    const DomItem left = call.field(Fields::callee).field(Fields::left);
+
+    const auto qmlFile = argument.containingFile().ownerAs<QmlFile>();
+    if (!qmlFile || !qmlFile->typeResolver())
+        return {};
+
+    ResolvedCallback result;
+    result.resolver = qmlFile->typeResolver();
+
+    const auto base = resolveExpressionTypeForCallback(left);
+
+    // someObject.someSignal.connect(callback)
+    if (method == "connect"_L1) {
+        const auto signal = resolveExpressionType(left, ResolveOwnerType);
+        if (position != 0 || !signal || !signal->semanticScope || !signal->name
+                || (signal->type != SignalIdentifier
+                    && signal->type != PropertyChangedSignalIdentifier)) {
+            return {};
+        }
+        const auto signalDefinitions = signal->semanticScope->methods(*signal->name);
+        if (signalDefinitions.isEmpty())
+            return {};
+        const auto signalParameters = signalDefinitions.front().parameters();
+        for (qsizetype i = 0; i < signalParameters.size(); ++i) {
+            QString name = signalParameters[i].name();
+            if (name.isEmpty())
+                name = u"argument%1"_s.arg(i + 1);
+            result.parameters.append({ name, signalParameters[i].type() });
+        }
+        result.minimumParameters = 0;
+        result.result = Result::Ignored;
+        return result;
+    }
+
+    Receiver receiver = Receiver::List;
+    QQmlJSScope::ConstPtr container;
+    QQmlJSScope::ConstPtr element;
+    QQmlJSScope::ConstPtr value;
+    bool hasValue = true;
+
+    if (const auto thenable = thenableOf(left)) {
+        receiver = thenable->receiver;
+        value = thenable->value;
+        // A future without a result calls back with nothing. Of a promise we may just not know.
+        hasValue = value || receiver == Receiver::Promise;
+    } else if (base && base->semanticScope
+               && base->semanticScope != result.resolver->varType()
+               && base->semanticScope != result.resolver->jsValueType()) {
+        container = base->semanticScope;
+        element = elementTypeOfList(container);
+        if (!element)
+            return {};
+    } else if (base && base->type != JavaScriptIdentifier && base->type != PropertyIdentifier
+               && base->type != NotAnIdentifier) {
+        // An id, a type, an enumeration and the like have no such methods.
+        return {};
+    }
+
+    const Signature *signature = find(receiver, method, position);
+    if (!signature)
+        return {};
+
+    result.minimumParameters = signature->minimumParameters;
+    result.result = signature->result;
+    for (const QQmlJSCallbackSignatures::Parameter &parameter : signature->parameters) {
+        QQmlJSScope::ConstPtr type;
+        switch (parameter.argument) {
+        case Argument::Element:
+            type = element;
+            break;
+        case Argument::Index:
+            type = result.resolver->int32Type();
+            break;
+        case Argument::Container:
+            type = container;
+            break;
+        case Argument::FutureResult:
+            if (!hasValue) {
+                result.minimumParameters = 0;
+                return result;
+            }
+            type = value;
+            break;
+        case Argument::Any:
+            break;
+        }
+        result.parameters.append({ parameter.name.toString(), type });
+    }
+    return result;
+}
+
+// The types below are derived from other expressions, which can refer to each other.
+static thread_local int s_contextualTypeDepth = 0;
+struct ContextualTypeDepthGuard
+{
+    ContextualTypeDepthGuard() { ++s_contextualTypeDepth; }
+    ~ContextualTypeDepthGuard() { --s_contextualTypeDepth; }
+    bool isTooDeep() const { return s_contextualTypeDepth > 8; }
+};
+
+/*!
+\internal
+Experiment: In
+
+\qml
+    someList.forEach((element, index) => ....)
+\endqml
+
+the parameters have no type annotations, but we know what the function is called with: an
+element of the list, and its index. The same holds for the other methods of lists that call a
+function for each element.
+
+qmlcachegen types the parameters of such callbacks this way when it compiles them. This gives the
+language server the same knowledge.
+*/
+static std::optional<ExpressionType>
+resolveCallbackParameterType(const DomItem &parameterDefinition, const QString &name)
+{
+    const std::optional<QQmlJSScope::JavaScriptIdentifier> jsIdentifier =
+            parameterDefinition.semanticScope()->ownJSIdentifier(name);
+    if (!jsIdentifier || jsIdentifier->kind != QQmlJSScope::JavaScriptIdentifier::Parameter)
+        return {};
+
+    // A declared type wins.
+    if (jsIdentifier->scope.toStrongRef())
+        return {};
+
+    const ContextualTypeDepthGuard guard;
+    if (guard.isTooDeep())
+        return {};
+
+    const DomItem functionExpression =
+            parameterDefinition.internalKind() == DomType::ScriptBlockStatement
+            ? parameterDefinition.directParent()
+            : parameterDefinition;
+    if (functionExpression.internalKind() != DomType::ScriptFunctionExpression)
+        return {};
+
+    // The function has to be passed to a method that tells us what it calls it with.
+    const auto callback = callbackOf(functionExpression);
+    if (!callback)
+        return {};
+
+    const DomItem parameters = functionExpression[Fields::parameters];
+    for (int i = 0; i < parameters.indexes() && i < callback->parameters.size(); ++i) {
+        if (parameters[i][Fields::identifier].value().toString() != name)
+            continue;
+        if (const QQmlJSScope::ConstPtr type = callback->parameters[i].type)
+            return ExpressionType{ name, type, JavaScriptIdentifier };
+        return {};
+    }
+    return {};
+}
+
+/*!
+\internal
+Experiment: In
+
+\qml
+    const first = someList[0]
+    let name = first.objectName
+\endqml
+
+the variables have no type annotations (and cannot have any), but they have the type of what they
+are initialized with. That is not necessarily the type of what they hold later, if they are
+assigned to. It is the best guess we have.
+*/
+static std::optional<ExpressionType>
+resolveVariableTypeFromInitializer(const DomItem &variableDefinition, const QString &name)
+{
+    const std::optional<QQmlJSScope::JavaScriptIdentifier> jsIdentifier =
+            variableDefinition.semanticScope()->ownJSIdentifier(name);
+    if (!jsIdentifier || jsIdentifier->kind == QQmlJSScope::JavaScriptIdentifier::Parameter)
+        return {};
+
+    if (jsIdentifier->scope.toStrongRef())
+        return {};
+
+    const ContextualTypeDepthGuard guard;
+    if (guard.isTooDeep())
+        return {};
+
+    // Find the declaration by where the identifier is declared.
+    const QQmlJS::SourceLocation location = jsIdentifier->location;
+    const auto items = itemsFromTextLocation(
+            variableDefinition.containingFile(), location.startLine - 1,
+            location.startColumn - 1);
+    for (const ItemLocation &itemLocation : items) {
+        DomItem declaration = itemLocation.domItem;
+        for (int i = 0; i < 3 && declaration
+                        && declaration.internalKind() != DomType::ScriptVariableDeclarationEntry;
+             ++i) {
+            declaration = declaration.directParent();
+        }
+        if (!declaration || declaration.internalKind() != DomType::ScriptVariableDeclarationEntry)
+            continue;
+        if (declaration.field(Fields::identifier).value().toString() != name)
+            continue;
+
+        const DomItem initializer = declaration.field(Fields::initializer);
+        if (!initializer)
+            return {};
+
+        const auto type = resolveExpressionType(
+                initializer, ResolveActualTypeForFieldMemberExpression);
+        if (!type || !type->semanticScope)
+            return {};
+        return ExpressionType{ name, type->semanticScope, JavaScriptIdentifier };
+    }
+
+    return {};
+}
+
+/*!
+\internal
 resolve an identifier in the same order the QML engine would, that is:
 * first check for local JS variables (`let x = ...`)
 * then check for ids
@@ -1518,6 +1865,14 @@ static std::optional<ExpressionType> resolveIdentifierExpressionType(const DomIt
                     "It should be empty.");
         if (auto parameter = resolveSignalHandlerParameterType(definitionOfItem, name, options))
             return parameter;
+
+        // Experiment: types we can tell from the context of the declaration
+        if (options == ResolveActualTypeForFieldMemberExpression) {
+            if (auto parameter = resolveCallbackParameterType(definitionOfItem, name))
+                return parameter;
+            if (auto variable = resolveVariableTypeFromInitializer(definitionOfItem, name))
+                return variable;
+        }
 
         const auto scope = definitionOfItem.semanticScope();
         return ExpressionType{ name,
@@ -1642,6 +1997,249 @@ resolveSignalOrPropertyExpressionType(const QString &name, const QQmlJSScope::Co
     example resolving the type of x in someJSObject.x (where `let someJSObject = { x: 42 };`) then
     the name and type of x is known but no semantic scope can be obtained.
 */
+static std::optional<ExpressionType> resolveExpressionTypeForCallback(const DomItem &item)
+{
+    return resolveExpressionType(item, ResolveActualTypeForFieldMemberExpression);
+}
+
+static CallbackSignature namedSignature(const ResolvedCallback &resolved);
+
+/*!
+\internal
+If a callback can be written at \a argument whose signature we know, returns that signature
+with the names of the types as they can be written in type annotations. See
+QQmlJSCallbackSignatures.
+*/
+std::optional<CallbackSignature> callbackSignatureForArgument(const DomItem &argument)
+{
+    const std::optional<ResolvedCallback> callback = callbackOf(argument);
+    if (!callback)
+        return {};
+    return namedSignature(*callback);
+}
+
+/*!
+\internal
+If \a binding is the handler of a signal, returns the signature of a function that handles it:
+onSomeSignal: (a, b) => ... The handler of a property change takes no arguments.
+*/
+std::optional<CallbackSignature> signalHandlerSignature(const DomItem &binding)
+{
+    if (binding.internalKind() != DomType::Binding)
+        return {};
+
+    const auto qmlFile = binding.containingFile().ownerAs<QmlFile>();
+    const auto handler = resolveExpressionType(binding, ResolveOwnerType);
+    if (!handler || !qmlFile || !qmlFile->typeResolver())
+        return {};
+
+    ResolvedCallback callback;
+    callback.resolver = qmlFile->typeResolver();
+    callback.minimumParameters = 0;
+    callback.result = QQmlJSCallbackSignatures::Result::Ignored;
+
+    if (handler->type == PropertyChangedHandlerIdentifier)
+        return namedSignature(callback);
+
+    if (handler->type != SignalHandlerIdentifier || !handler->name || !handler->semanticScope)
+        return {};
+
+    const auto signalName = QQmlSignalNames::handlerNameToSignalName(*handler->name);
+    const auto signalDefinitions = signalName
+            ? handler->semanticScope->methods(*signalName) : QList<QQmlJSMetaMethod>();
+    if (signalDefinitions.isEmpty())
+        return {};
+
+    const auto signalParameters = signalDefinitions.front().parameters();
+    for (qsizetype i = 0; i < signalParameters.size(); ++i) {
+        QString name = signalParameters[i].name();
+        if (name.isEmpty())
+            name = u"argument%1"_s.arg(i + 1);
+        callback.parameters.append({ name, signalParameters[i].type() });
+    }
+    return namedSignature(callback);
+}
+
+// The callback with the names of the types as they can be written in this document
+static CallbackSignature namedSignature(const ResolvedCallback &resolved)
+{
+    const ResolvedCallback *callback = &resolved;
+
+    // The name the type has in this document. A list is written as list<element>, and what we
+    // don't know or cannot name is a var.
+    const auto nameOf = [&](const QQmlJSScope::ConstPtr &type) {
+        if (!type)
+            return u"var"_s;
+        if (type == callback->resolver->realType())
+            return u"real"_s;
+        QString name = callback->resolver->nameForType(type);
+        if (!name.isEmpty() && !name.startsWith(u'$'))
+            return name;
+        if (const QQmlJSScope::ConstPtr element = elementTypeOfList(type)) {
+            if (element == callback->resolver->realType())
+                return u"list<real>"_s;
+            name = callback->resolver->nameForType(element);
+            if (!name.isEmpty() && !name.startsWith(u'$'))
+                return QString(u"list<"_s + name + u'>');
+        }
+        return u"var"_s;
+    };
+
+    CallbackSignature result;
+    result.minimumParameters = callback->minimumParameters;
+    for (const ResolvedCallback::Parameter &parameter : std::as_const(callback->parameters))
+        result.parameters.append({ parameter.name, nameOf(parameter.type) });
+
+    switch (callback->result) {
+    case QQmlJSCallbackSignatures::Result::Ignored:
+        result.returnType = u"void"_s;
+        break;
+    case QQmlJSCallbackSignatures::Result::Boolean:
+        result.returnType = u"bool"_s;
+        break;
+    case QQmlJSCallbackSignatures::Result::Number:
+        result.returnType = u"real"_s;
+        break;
+    case QQmlJSCallbackSignatures::Result::Any:
+        break;
+    }
+    return result;
+}
+
+// The name of a member of an object literal, written as identifier or as string
+static QString nameOfObjectLiteralMember(const DomItem &scriptProperty)
+{
+    const DomItem name = scriptProperty.field(Fields::name);
+    QString result = name.field(Fields::identifier).value().toString();
+    if (result.isEmpty())
+        result = name.field(Fields::value).value().toString();
+    return result;
+}
+
+/*!
+\internal
+If the object literal \a scriptObject becomes a value of a structured value type where it is
+written, returns that type: as the value of a property binding, on the right of an assignment,
+as argument of a method, as what a function with a declared return type returns, or as a member
+of another such literal.
+*/
+QQmlJSScope::ConstPtr structuredTypeOfObjectLiteral(const DomItem &scriptObject, int depth)
+{
+    if (depth > 8 || scriptObject.internalKind() != DomType::ScriptObject)
+        return {};
+
+    const auto qmlFile = scriptObject.containingFile().ownerAs<QmlFile>();
+    if (!qmlFile || !qmlFile->typeResolver())
+        return {};
+    const auto resolver = qmlFile->typeResolver();
+
+    const auto structured = [](const QQmlJSScope::ConstPtr &type) {
+        return (type && type->isStructured()
+                && type->accessSemantics() == QQmlJSScope::AccessSemantics::Value)
+                ? type : QQmlJSScope::ConstPtr();
+    };
+
+    DomItem value = scriptObject;
+    DomItem parent = scriptObject.directParent();
+    while (parent.internalKind() == DomType::ScriptParenthesizedExpression) {
+        value = parent;
+        parent = parent.directParent();
+    }
+
+    switch (parent.internalKind()) {
+    case DomType::ScriptExpression: {
+        // property someType p: ({ ... })
+        const DomItem binding = parent.directParent();
+        if (binding.internalKind() != DomType::Binding)
+            return {};
+        const auto owner = resolveExpressionType(binding, ResolveOwnerType);
+        if (!owner || !owner->semanticScope || !owner->name)
+            return {};
+        return structured(owner->semanticScope->property(*owner->name).type());
+    }
+    case DomType::ScriptProperty: {
+        // { inner: { ... } }
+        const DomItem outer = parent.filterUp(
+                [](DomType type, const DomItem &) { return type == DomType::ScriptObject; },
+                FilterUpOptions::ReturnOuter);
+        const QQmlJSScope::ConstPtr outerType = structuredTypeOfObjectLiteral(outer, depth + 1);
+        if (!outerType)
+            return {};
+        return structured(outerType->property(nameOfObjectLiteralMember(parent)).type());
+    }
+    case DomType::ScriptBinaryExpression: {
+        // someObject.someProperty = { ... }
+        if (isFieldMemberExpression(parent) || parent.field(Fields::right) != value)
+            return {};
+        const auto left = resolveExpressionType(
+                parent.field(Fields::left), ResolveActualTypeForFieldMemberExpression);
+        return left ? structured(left->semanticScope) : QQmlJSScope::ConstPtr();
+    }
+    case DomType::ScriptReturnStatement: {
+        // function f(): someType { return { ... } }
+        const DomItem method = parent.filterUp(
+                [](DomType type, const DomItem &) { return type == DomType::MethodInfo; },
+                FilterUpOptions::ReturnOuter);
+        const auto info = method.as<MethodInfo>();
+        if (!info || info->typeName.isEmpty())
+            return {};
+        return structured(resolver->typeForName(info->typeName));
+    }
+    default:
+        break;
+    }
+
+    // someObject.someMethod({ ... })
+    DomItem call = parent;
+    for (int i = 0; i < 2 && call && call.internalKind() != DomType::ScriptCallExpression; ++i)
+        call = call.directParent();
+    if (call && call.internalKind() == DomType::ScriptCallExpression) {
+        const DomItem arguments = call.field(Fields::arguments);
+        int position = -1;
+        for (int i = 0; i < arguments.indexes(); ++i) {
+            if (arguments.index(i) == value) {
+                position = i;
+                break;
+            }
+        }
+        const auto callee = resolveExpressionType(call.field(Fields::callee), ResolveOwnerType);
+        if (position < 0 || !callee || !callee->semanticScope || !callee->name
+                || callee->type != MethodIdentifier) {
+            return {};
+        }
+        const auto methods = callee->semanticScope->methods(*callee->name);
+        if (methods.isEmpty() || methods.front().parameters().size() <= position)
+            return {};
+        return structured(methods.front().parameters().at(position).type());
+    }
+
+    return {};
+}
+
+/*!
+\internal
+Returns the names of the members the object literal \a scriptObject already has.
+*/
+QStringList membersOfObjectLiteral(const DomItem &scriptObject)
+{
+    QStringList result;
+    const DomItem properties = scriptObject.field(Fields::properties);
+    for (int i = 0; i < properties.indexes(); ++i)
+        result.append(nameOfObjectLiteralMember(properties.index(i)));
+    return result;
+}
+
+/*!
+\internal
+Returns whether \a expression is the promise that then(), catch() or finally() of a QFuture or
+of another such promise returns.
+*/
+bool isPromiseExpression(const DomItem &expression)
+{
+    const auto thenable = thenableOf(expression);
+    return thenable && thenable->receiver == QQmlJSCallbackSignatures::Receiver::Promise;
+}
+
 std::optional<ExpressionType> resolveExpressionType(const QQmlJS::Dom::DomItem &item,
                                                     ResolveOptions options)
 {
@@ -1786,6 +2384,17 @@ std::optional<ExpressionType> resolveExpressionType(const QQmlJS::Dom::DomItem &
         if (isFieldMemberExpression(item)) {
             return resolveExpressionType(item.field(Fields::right), options);
         }
+
+        // Experiment: an element of a list, as in someList[0]
+        if (options == ResolveActualTypeForFieldMemberExpression
+                && item.field(Fields::operation).value().toInteger()
+                           == ScriptElements::BinaryExpression::ArrayMemberAccess) {
+            const auto list = resolveExpressionType(item.field(Fields::left), options);
+            if (!list)
+                return {};
+            if (const QQmlJSScope::ConstPtr element = elementTypeOfList(list->semanticScope))
+                return ExpressionType{ {}, element, NotAnIdentifier };
+        }
         return {};
     }
     case DomType::ScriptLiteral: {
@@ -1864,6 +2473,24 @@ std::optional<ExpressionType> resolveExpressionType(const QQmlJS::Dom::DomItem &
     }
     case DomType::ScriptCallExpression: {
         const DomItem callee = item.field(Fields::callee);
+
+        // Experiment: the methods of a list that return a list of the same type, so that
+        // someList.filter(...).forEach(element => ...) knows its elements
+        if (options == ResolveActualTypeForFieldMemberExpression && isFieldMemberExpression(callee)) {
+            static const QLatin1StringView sameType[] = {
+                "filter"_L1, "slice"_L1, "reverse"_L1, "sort"_L1, "concat"_L1, "toReversed"_L1,
+                "toSorted"_L1
+            };
+            const QString method
+                    = callee.field(Fields::right).field(Fields::identifier).value().toString();
+            if (std::find(std::begin(sameType), std::end(sameType), method)
+                    != std::end(sameType)) {
+                const auto list = resolveExpressionType(callee.field(Fields::left), options);
+                if (list && elementTypeOfList(list->semanticScope))
+                    return ExpressionType{ {}, list->semanticScope, NotAnIdentifier };
+            }
+        }
+
         const auto calleeExpressionType = resolveExpressionType(callee, ResolveOwnerType);
 
         if (!calleeExpressionType || !calleeExpressionType->semanticScope

@@ -4677,6 +4677,292 @@ void tst_qmlls_utils::completions_data()
             << ExpectedCompletions { {"x"_L1, CompletionItemKind::Property },
                                      {"y"_L1, CompletionItemKind::Property } }
             << QStringList {};
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-callbackParameter")
+            << testFile("completions/contextualTypes.qml") << 10 << 51
+            << ExpectedCompletions{ { "objectName"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-initializedConst")
+            << testFile("completions/contextualTypes.qml") << 12 << 27
+            << ExpectedCompletions{ { "objectName"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-filterCallback")
+            << testFile("completions/contextualTypes.qml") << 13 << 35
+            << ExpectedCompletions{ { "running"_L1, CompletionItemKind::Property }, { "interval"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-afterFilter")
+            << testFile("completions/contextualTypes.qml") << 13 << 73
+            << ExpectedCompletions{ { "interval"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-constFromConst")
+            << testFile("completions/contextualTypes.qml") << 16 << 26
+            << ExpectedCompletions{ { "interval"_L1, CompletionItemKind::Property }, { "repeat"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-functionExpression")
+            << testFile("completions/contextualTypes.qml") << 17 << 58
+            << ExpectedCompletions{ { "objectName"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-firstOfTwoParameters")
+            << testFile("completions/contextualTypes.qml") << 18 << 59
+            << ExpectedCompletions{ { "repeat"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-declaredTypeWins")
+            << testFile("completions/contextualTypes.qml") << 19 << 62
+            << ExpectedCompletions{ { "objectName"_L1, CompletionItemKind::Property } }
+            << QStringList{ u"interval"_s };
+
+    // Experiment: types from the context of the declaration
+    QTest::newRow("contextualType-unknownInitializer")
+            << testFile("completions/contextualTypes.qml") << 21 << 29
+            << ExpectedCompletions{  }
+            << QStringList{ u"objectName"_s };
+
+    QTest::newRow("contextualType-thenCallback")
+            << testFile("completions/futureThen.qml") << 10 << 72
+            << ExpectedCompletions{ { "shoeSize"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    QTest::newRow("contextualType-listInThenCallback")
+            << testFile("completions/futureThen.qml") << 12 << 57
+            << ExpectedCompletions{ { "shoeSize"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    QTest::newRow("contextualType-rejectionCallback")
+            << testFile("completions/futureThen.qml") << 14 << 84
+            << ExpectedCompletions{  }
+            << QStringList{ u"shoeSize"_s };
+
+    QTest::newRow("contextualType-thenOnVoidFuture")
+            << testFile("completions/futureThen.qml") << 15 << 67
+            << ExpectedCompletions{  }
+            << QStringList{ u"shoeSize"_s };
+
+    QTest::newRow("methodsOfFuture")
+            << testFile("completions/futureThen.qml") << 16 << 36
+            << ExpectedCompletions{ { "then"_L1, CompletionItemKind::Method },
+                                    { "catch"_L1, CompletionItemKind::Method } }
+            << QStringList{ u"shoeSize"_s };
+
+    // Arrow functions with type annotations as snippets, with the signature of the callback
+    // where the method that takes it tells us. See QQmlJSCallbackSignatures.
+    QTest::newRow("arrowSnippet-forEach")
+            << testFile("completions/arrowSnippets.qml") << 11 << 31
+            << ExpectedCompletions{ { "(element: QtObject): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(element: QtObject, index: int): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(element: QtObject, index: int, array: list<QtObject>): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(parameter: type): returnType => expression"_L1, CompletionItemKind::Snippet },
+                                    { "(parameter: type): returnType => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(element: QtObject): bool => expression"_s };
+
+    QTest::newRow("arrowSnippet-filter")
+            << testFile("completions/arrowSnippets.qml") << 12 << 30
+            << ExpectedCompletions{ { "(element: real): bool => expression"_L1, CompletionItemKind::Snippet },
+                                    { "(element: real, index: int, array: list<real>): bool => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(element: real): void => { statements... }"_s };
+
+    QTest::newRow("arrowSnippet-map")
+            << testFile("completions/arrowSnippets.qml") << 13 << 27
+            << ExpectedCompletions{ { "(element: real): returnType => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("arrowSnippet-reduce")
+            << testFile("completions/arrowSnippets.qml") << 14 << 30
+            << ExpectedCompletions{ { "(accumulator: var, element: real): returnType => expression"_L1, CompletionItemKind::Snippet },
+                                    { "(accumulator: var, element: real, index: int, array: list<real>): returnType => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(accumulator: var): returnType => expression"_s };
+
+    QTest::newRow("arrowSnippet-sort")
+            << testFile("completions/arrowSnippets.qml") << 15 << 28
+            << ExpectedCompletions{ { "(a: real, b: real): real => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(a: real): real => expression"_s };
+
+    QTest::newRow("arrowSnippet-noCallback")
+            << testFile("completions/arrowSnippets.qml") << 16 << 24
+            << ExpectedCompletions{ { "(parameter: type): returnType => expression"_L1, CompletionItemKind::Snippet },
+                                    { "(parameter: type): returnType => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(element: QtObject): void => { statements... }"_s };
+
+    QTest::newRow("contextualType-thirdParameter")
+            << testFile("completions/arrowSnippets.qml") << 17 << 69
+            << ExpectedCompletions{ { "length"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    QTest::newRow("contextualType-comparator")
+            << testFile("completions/arrowSnippets.qml") << 18 << 39
+            << ExpectedCompletions{ { "toFixed"_L1, CompletionItemKind::Method } }
+            << QStringList{  };
+
+    // Callbacks of signals, of promises, and of lists we know nothing about
+    QTest::newRow("callback-signalHandler")
+            << testFile("completions/callbackReceivers.qml") << 11 << 15
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real, name: string): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("callback-signalConnect")
+            << testFile("completions/callbackReceivers.qml") << 14 << 29
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real, name: string): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(x: real, name: string): bool => expression"_s };
+
+    QTest::newRow("callback-signalConnectParameter")
+            << testFile("completions/callbackReceivers.qml") << 15 << 63
+            << ExpectedCompletions{ { "length"_L1, CompletionItemKind::Property } }
+            << QStringList{  };
+
+    QTest::newRow("callback-futureThen")
+            << testFile("completions/callbackReceivers.qml") << 16 << 42
+            << ExpectedCompletions{ { "(result: Person): returnType => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("callback-promiseThen")
+            << testFile("completions/callbackReceivers.qml") << 17 << 89
+            << ExpectedCompletions{ { "(value: int): returnType => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(result: Person): returnType => expression"_s };
+
+    QTest::newRow("callback-promiseCatch")
+            << testFile("completions/callbackReceivers.qml") << 18 << 65
+            << ExpectedCompletions{ { "(error: var): returnType => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("callback-promiseFinally")
+            << testFile("completions/callbackReceivers.qml") << 19 << 67
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(error: var): returnType => expression"_s };
+
+    QTest::newRow("callback-promiseThenParameter")
+            << testFile("completions/callbackReceivers.qml") << 20 << 95
+            << ExpectedCompletions{ { "toFixed"_L1, CompletionItemKind::Method } }
+            << QStringList{  };
+
+    QTest::newRow("callback-promiseMethods")
+            << testFile("completions/callbackReceivers.qml") << 21 << 58
+            << ExpectedCompletions{ { "then"_L1, CompletionItemKind::Method },
+                                    { "catch"_L1, CompletionItemKind::Method },
+                                    { "finally"_L1, CompletionItemKind::Method } }
+            << QStringList{ u"shoeSize"_s };
+
+    QTest::newRow("callback-unknownReceiver")
+            << testFile("completions/callbackReceivers.qml") << 22 << 32
+            << ExpectedCompletions{ { "(element: var): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(element: var, index: int, array: var): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("callback-noSuchMethod")
+            << testFile("completions/callbackReceivers.qml") << 23 << 31
+            << ExpectedCompletions{ { "(parameter: type): returnType => expression"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(element: var): void => { statements... }"_s };
+
+    // The handler of a signal as a function with the arguments of the signal, wherever the
+    // handler starts
+    QTest::newRow("handlerSnippet-afterColon")
+            << testFile("completions/signalHandlerSnippets.qml") << 9 << 13
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real, name: string): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("handlerSnippet-inFrontOfFunction")
+            << testFile("completions/signalHandlerSnippets.qml") << 9 << 14
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real, name: string): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("handlerSnippet-insideFunction")
+            << testFile("completions/signalHandlerSnippets.qml") << 9 << 35
+            << ExpectedCompletions{ { "text"_L1, CompletionItemKind::Property } }
+            << QStringList{ u"(): void => { statements... }"_s, u"(x: real, name: string): void => { statements... }"_s };
+
+    QTest::newRow("handlerSnippet-firstWord")
+            << testFile("completions/signalHandlerSnippets.qml") << 10 << 17
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(x: real): void => { statements... }"_s };
+
+    QTest::newRow("handlerSnippet-inFrontOfExpression")
+            << testFile("completions/signalHandlerSnippets.qml") << 12 << 22
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("handlerSnippet-insideExpression")
+            << testFile("completions/signalHandlerSnippets.qml") << 12 << 28
+            << ExpectedCompletions{ { "text"_L1, CompletionItemKind::Property } }
+            << QStringList{ u"(): void => { statements... }"_s };
+
+    QTest::newRow("handlerSnippet-propertyChange")
+            << testFile("completions/signalHandlerSnippets.qml") << 14 << 21
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    // QTBUG-139463: the members of an object literal that becomes a structured value are the
+    // properties of that type.
+    QTest::newRow("structuredValue-emptyLiteral")
+            << testFile("completions/structuredValues.qml") << 9 << 41
+            << ExpectedCompletions{ { "number"_L1, CompletionItemKind::Property },
+                                    { "truth"_L1, CompletionItemKind::Property },
+                                    { "number: value, truth: value"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"count"_s };
+
+    QTest::newRow("structuredValue-firstMember")
+            << testFile("completions/structuredValues.qml") << 10 << 42
+            << ExpectedCompletions{ { "number"_L1, CompletionItemKind::Property },
+                                    { "truth"_L1, CompletionItemKind::Property },
+                                    { "number: value, truth: value"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"count"_s };
+
+    QTest::newRow("structuredValue-secondMember")
+            << testFile("completions/structuredValues.qml") << 11 << 54
+            << ExpectedCompletions{ { "truth"_L1, CompletionItemKind::Property } }
+            << QStringList{ u"number"_s, u"number: value, truth: value"_s };
+
+    QTest::newRow("structuredValue-memberValue")
+            << testFile("completions/structuredValues.qml") << 12 << 50
+            << ExpectedCompletions{ { "count"_L1, CompletionItemKind::Property } }
+            << QStringList{ u"truth"_s };
+
+    QTest::newRow("structuredValue-nestedLiteral")
+            << testFile("completions/structuredValues.qml") << 13 << 60
+            << ExpectedCompletions{ { "number"_L1, CompletionItemKind::Property },
+                                    { "truth"_L1, CompletionItemKind::Property },
+                                    { "number: value, truth: value"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"label"_s };
+
+    QTest::newRow("structuredValue-returned")
+            << testFile("completions/structuredValues.qml") << 17 << 21
+            << ExpectedCompletions{ { "number"_L1, CompletionItemKind::Property },
+                                    { "truth"_L1, CompletionItemKind::Property },
+                                    { "number: value, truth: value"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("structuredValue-assigned")
+            << testFile("completions/structuredValues.qml") << 20 << 31
+            << ExpectedCompletions{ { "number"_L1, CompletionItemKind::Property },
+                                    { "truth"_L1, CompletionItemKind::Property },
+                                    { "number: value, truth: value"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("structuredValue-argument")
+            << testFile("completions/structuredValues.qml") << 21 << 29
+            << ExpectedCompletions{ { "number"_L1, CompletionItemKind::Property },
+                                    { "truth"_L1, CompletionItemKind::Property },
+                                    { "number: value, truth: value"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
 }
 
 void tst_qmlls_utils::completions()

@@ -38,6 +38,7 @@ qt_internal_add_module(QmlCompiler
         qqmljstypepropagator.cpp qqmljstypepropagator_p.h
         qqmljstypereader.cpp qqmljstypereader_p.h
         qqmljstyperesolver.cpp qqmljstyperesolver_p.h
+        qqmljscallbacksignatures_p.h
         qqmljsutils.cpp qqmljsutils_p.h
         qqmlsa.cpp qqmlsa.h qqmlsa_p.h
         qqmlsaconstants.h

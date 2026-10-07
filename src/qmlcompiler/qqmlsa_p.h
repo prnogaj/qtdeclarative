@@ -220,6 +220,11 @@ public:
     QSet<PropertyPass *> findPropertyUsePasses(const QQmlSA::Element &element,
                                                const QString &propertyName);
 
+    // While suspended, the passes are not told about what the code does. For code that is
+    // analyzed more than once.
+    void setPropertyPassesSuspended(bool suspended) { m_propertyPassesSuspended = suspended; }
+    bool arePropertyPassesSuspended() const { return m_propertyPassesSuspended; }
+
     void analyzeWrite(const QQmlSA::Element &element, const QString &propertyName,
                       const QQmlSA::Element &value, const QQmlSA::Element &writeScope,
                       const QQmlSA::SourceLocation &location);
@@ -238,6 +243,7 @@ public:
     std::multimap<QString, PropertyPassInvocation> m_propertyPasses;
     std::unordered_map<quint32, Binding> m_bindingsByLocation;
     QQmlJSImportVisitor *m_visitor = nullptr;
+    bool m_propertyPassesSuspended = false;
     QQmlJSTypeResolver *m_typeResolver = nullptr;
 };
 

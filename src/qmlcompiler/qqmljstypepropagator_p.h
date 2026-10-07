@@ -212,6 +212,21 @@ protected:
     virtual void propagateCall(
             const QList<QQmlJSMetaMethod> &methods, int argc, int argv,
             QQmlJSRegisterContent scope);
+    void loadContextLocal(int scope, int index);
+    void storeContextLocal(int scope, int index);
+    bool mergeContextLocal(
+            const ClosureSupport::Local &local, const QQmlJSScope::ConstPtr &type,
+            bool isDetached = false);
+    bool isDetachedValue(QQmlJSRegisterContent content) const;
+    bool propagateValueTypeFactory(
+            const QString &name, QQmlJSRegisterContent scope, int argc, int argv);
+
+    // The linter reports calls as they are written in the document.
+    // Only a code generator that knows about closures knows how to construct them, too.
+    virtual bool propagatesValueTypeFactories() const
+    {
+        return m_function->closureSupport && !m_function->closureSupport->analysisOnly;
+    }
     virtual void propagateTranslationMethod_SAcheck(const QString &methodName);
     bool propagateTranslationMethod(const QList<QQmlJSMetaMethod> &methods, int argc, int argv);
     void propagateStringArgCall(QQmlJSRegisterContent base, int argv);
@@ -281,6 +296,36 @@ protected:
     }
 
     QQmlJSRegisterContent m_returnType;
+
+    // The closure loaded by the previous instructions, if it has only been moved into a register
+    // since. See QQmlJSCompilePass::ClosureSupport.
+    struct LoadedClosure
+    {
+        int functionIndex = -1;
+        int instructionOffset = -1;
+        int registerIndex = InvalidRegister;
+    };
+    LoadedClosure m_closure;
+
+    // The closure loaded before that one, if both have only been moved into registers since:
+    // the first of two callbacks passed to the same call.
+    LoadedClosure m_previousClosure;
+
+    bool isCapturedCopy(QQmlJSRegisterContent content, bool canWriteBack = false);
+
+    // The object literals defined so far, by the content they have produced: the class that
+    // names the members, and the contents of the members in the order of that class.
+    struct ObjectLiteral
+    {
+        int internalClassId = -1;
+        int instructionOffset = -1;
+        QList<QQmlJSRegisterContent> members;
+    };
+    QHash<QQmlJSRegisterContent, ObjectLiteral> m_objectLiterals;
+
+    // The value types and lists of values loaded from locals of contexts, with the scope and
+    // the index of the local
+    QHash<QQmlJSRegisterContent, std::pair<int, int>> m_loadedLocals;
 
     // Not part of the state, as the back jumps are the reason for running multiple passes
     QMultiHash<int, ExpectedRegisterState> m_jumpOriginRegisterStateByTargetInstructionOffset;

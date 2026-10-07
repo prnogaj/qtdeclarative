@@ -352,6 +352,18 @@ void QQmlLSCompletion::methodCompletion(const QQmlJSScope::ConstPtr &scope,
                                         QDuplicateTracker<QString> *usedNames,
                                         BackInsertIterator it) const
 {
+    // A QFuture is a thenable in JavaScript. Its type does not tell.
+    if (scope->isOpaqueType() && scope->internalName().startsWith("QFuture<"_L1)) {
+        for (const QLatin1StringView name : { "then"_L1, "catch"_L1 }) {
+            if (usedNames && usedNames->hasSeen(name))
+                continue;
+            CompletionItem completion;
+            completion.label = QByteArray(name.data(), name.size());
+            completion.kind = CompletionItemKind::Method;
+            it = completion;
+        }
+    }
+
     // JS functions in current and base scopes
     for (const auto &[name, method] : scope->methods().asKeyValueRange()) {
         if (method.access() != QQmlJSMetaMethod::Public)
@@ -551,6 +563,8 @@ void QQmlLSCompletion::suggestJSExpressionCompletion(const DomItem &scriptIdenti
                               LocalSymbolsType::Singleton | LocalSymbolsType::AttachedType,
                               CompletionItemKind::Class, result);
 
+        arrowFunctionSnippets(scriptIdentifier, result);
+
         auto scope = scriptIdentifier.nearestSemanticScope();
         if (!scope)
             return;
@@ -558,6 +572,18 @@ void QQmlLSCompletion::suggestJSExpressionCompletion(const DomItem &scriptIdenti
 
         enumerationCompletion(nearestScope, &usedNames, result);
     } else {
+        // What then() and catch() of a QFuture return is a promise. It has no type we could
+        // look up, but we know what it is.
+        if (QQmlLSUtils::isPromiseExpression(owner)) {
+            for (const QLatin1StringView name : { "then"_L1, "catch"_L1, "finally"_L1 }) {
+                CompletionItem completion;
+                completion.label = QByteArray(name.data(), name.size());
+                completion.kind = CompletionItemKind::Method;
+                result = completion;
+            }
+            return;
+        }
+
         auto ownerExpressionType = QQmlLSUtils::resolveExpressionType(
                 owner, QQmlLSUtils::ResolveActualTypeForFieldMemberExpression);
         if (!ownerExpressionType || !ownerExpressionType->semanticScope)
@@ -626,6 +652,70 @@ void QQmlLSCompletion::suggestJSExpressionCompletion(const DomItem &scriptIdenti
         methodCompletion(globals, &usedNames, result);
         propertyCompletion(globals, &usedNames, result);
     }
+}
+
+/*!
+\internal
+Suggests arrow functions with the given signature: one snippet for each number of parameters
+the callback may take.
+*/
+void QQmlLSCompletion::callbackSnippets(const QQmlLSUtils::CallbackSignature &signature,
+                                        BackInsertIterator result) const
+{
+    const QQmlLSUtils::CallbackSignature *callback = &signature;
+    {
+        const bool returnsNothing = callback->returnType == "void"_L1;
+        const QByteArray body = returnsNothing ? "{ statements... }" : "expression";
+        const QByteArray bodySnippet = returnsNothing ? "{\n\t$0\n}" : "$0";
+
+        const auto returnTypes = [&](qsizetype parameters) {
+            return callback->returnType.isEmpty()
+                    ? std::make_pair(QByteArray("returnType"),
+                                     QByteArray("${" + QByteArray::number(parameters + 1)
+                                                + ":returnType}"))
+                    : std::make_pair(callback->returnType.toUtf8(),
+                                     callback->returnType.toUtf8());
+        };
+
+        QByteArray label = "(";
+        QByteArray text = "(";
+        if (callback->minimumParameters == 0) {
+            const auto [returnType, returnSnippet] = returnTypes(0);
+            result = makeSnippet(QByteArray("(): " + returnType + " => " + body),
+                                 QByteArray("(): " + returnSnippet + " => " + bodySnippet));
+        }
+        for (qsizetype i = 0; i < callback->parameters.size(); ++i) {
+            const QByteArray name = callback->parameters[i].name.toUtf8();
+            const QByteArray type = callback->parameters[i].type.toUtf8();
+            const QByteArray separator = i == 0 ? "" : ", ";
+            label += separator + name + ": " + type;
+            text += separator + "${" + QByteArray::number(i + 1) + ':' + name + "}: " + type;
+            if (i + 1 < callback->minimumParameters)
+                continue;
+
+            const auto [returnType, returnSnippet] = returnTypes(i + 1);
+            result = makeSnippet(QByteArray(label + "): " + returnType + " => " + body),
+                                 QByteArray(text + "): " + returnSnippet + " => " + bodySnippet));
+        }
+    }
+
+}
+
+/*!
+\internal
+Suggests arrow functions with type annotations where an expression is expected. As the callback
+of a method that tells us what it calls it with, the parameter gets that type.
+*/
+void QQmlLSCompletion::arrowFunctionSnippets(const DomItem &expression,
+                                             BackInsertIterator result) const
+{
+    if (const auto callback = QQmlLSUtils::callbackSignatureForArgument(expression))
+        callbackSnippets(*callback, result);
+
+    result = makeSnippet("(parameter: type): returnType => expression",
+                         "(${1:parameter}: ${2:type}): ${3:returnType} => $0");
+    result = makeSnippet("(parameter: type): returnType => { statements... }",
+                         "(${1:parameter}: ${2:type}): ${3:returnType} => {\n\t$0\n}");
 }
 
 static const QQmlJSScope *resolve(const QQmlJSScope *current, const QStringList &names)
@@ -1772,6 +1862,112 @@ QQmlLSCompletion::completions(const DomItem &currentItem,
     return result;
 }
 
+/*!
+\internal
+If the object literal \a scriptObject becomes a structured value, suggests the properties of
+that type it does not have yet as its members, and all of them together as a snippet.
+*/
+void QQmlLSCompletion::structuredValueMembers(const DomItem &scriptObject,
+                                              const QString &memberBeingWritten,
+                                              BackInsertIterator result) const
+{
+    const QQmlJSScope::ConstPtr type = QQmlLSUtils::structuredTypeOfObjectLiteral(scriptObject);
+    if (!type)
+        return;
+
+    // The member the cursor is in may be changed into any other one, or stay what it is.
+    QStringList existing = QQmlLSUtils::membersOfObjectLiteral(scriptObject);
+    existing.removeOne(memberBeingWritten);
+    QStringList missing;
+    const auto properties = type->properties();
+    for (auto it = properties.constBegin(), end = properties.constEnd(); it != end; ++it) {
+        if (!it->isWritable() || existing.contains(it.key()))
+            continue;
+        missing.append(it.key());
+    }
+    missing.sort();
+
+    QByteArray label;
+    QByteArray text;
+    for (qsizetype i = 0; i < missing.size(); ++i) {
+        const QByteArray name = missing[i].toUtf8();
+        CompletionItem completion;
+        completion.label = name;
+        completion.kind = CompletionItemKind::Property;
+        completion.detail = properties.value(missing[i]).typeName().toUtf8();
+        result = completion;
+
+        label += (i == 0 ? "" : ", ") + name + ": value";
+        text += (i == 0 ? "" : ", ") + name + ": ${" + QByteArray::number(i + 1) + ':' + name
+                + '}';
+    }
+    if (missing.size() > 1)
+        result = makeSnippet(label, text);
+}
+
+/*!
+\internal
+If the cursor is in the name of the member \a scriptProperty of an object literal that becomes a
+structured value, suggests the properties of that type and returns true.
+*/
+bool QQmlLSCompletion::insideObjectLiteralMemberName(
+        const DomItem &scriptProperty, const QQmlLSCompletionPosition &positionInfo,
+        BackInsertIterator result) const
+{
+    const DomItem scriptObject = scriptProperty.filterUp(
+            [](DomType type, const DomItem &) { return type == DomType::ScriptObject; },
+            FilterUpOptions::ReturnOuter);
+    if (!scriptObject || !QQmlLSUtils::structuredTypeOfObjectLiteral(scriptObject))
+        return false;
+
+    // Behind the name comes the value: any expression. A member written as a name alone is
+    // all name.
+    const DomItem name = scriptProperty.field(Fields::name);
+    const auto nameLocation = name ? FileLocations::treeOf(name) : FileLocations::Tree();
+    if (nameLocation && positionInfo.offset() > nameLocation->info().fullRegion.end()) {
+        suggestJSExpressionCompletion(positionInfo.itemAtPosition, result);
+        return true;
+    }
+
+    QString written = name.field(Fields::identifier).value().toString();
+    if (written.isEmpty())
+        written = name.field(Fields::value).value().toString();
+    structuredValueMembers(scriptObject, written, result);
+    return true;
+}
+
+/*!
+\internal
+The handler of a signal can be a function that takes the arguments of the signal. Offer that
+where the handler starts: right after the colon, in front of whatever is written there, or while
+the first word of it is being typed.
+*/
+void QQmlLSCompletion::signalHandlerSnippets(const QQmlLSCompletionPosition &positionInfo,
+                                             BackInsertIterator result) const
+{
+    const DomItem item = positionInfo.itemAtPosition;
+    const auto isBinding = [](const DomItem &candidate) {
+        return candidate.internalKind() == DomType::Binding;
+    };
+    const DomItem binding = isBinding(item) ? item : item.filterUp(
+            [](DomType type, const QQmlJS::Dom::DomItem &) { return type == DomType::Binding; },
+            FilterUpOptions::ReturnOuter);
+    if (!binding || !isBinding(binding) || !cursorAfterColon(binding, positionInfo))
+        return;
+
+    const DomItem value = binding.field(Fields::value);
+    const auto valueLocation = value ? FileLocations::treeOf(value) : FileLocations::Tree();
+    const bool isInFrontOfValue = !valueLocation
+            || positionInfo.offset() <= valueLocation->info().fullRegion.begin();
+    const bool isWholeValue = isBinding(item.directParent())
+            || isBinding(item.directParent().directParent());
+    if (!isInFrontOfValue && !isWholeValue)
+        return;
+
+    if (const auto handler = QQmlLSUtils::signalHandlerSignature(binding))
+        callbackSnippets(*handler, result);
+}
+
 void QQmlLSCompletion::collectCompletions(const DomItem &currentItem,
                                           const CompletionContextStrings &contextStrings,
                                           BackInsertIterator result) const
@@ -1798,6 +1994,7 @@ void QQmlLSCompletion::collectCompletions(const DomItem &currentItem,
     (required to provide completion at the correct position, for example for attached properties).
     */
     const QQmlLSCompletionPosition positionInfo{ currentItem, contextStrings };
+    signalHandlerSnippets(positionInfo, result);
     for (DomItem currentParent = currentItem; currentParent;
          currentParent = currentParent.directParent()) {
         const DomType currentType = currentParent.internalKind();
@@ -1921,8 +2118,12 @@ void QQmlLSCompletion::collectCompletions(const DomItem &currentItem,
             insideVariableDeclarationEntry(currentParent, positionInfo, result);
             return;
         case DomType::ScriptProperty:
+            // The name of a member of an object literal that becomes a structured value
+            if (insideObjectLiteralMemberName(currentParent, positionInfo, result))
+                return;
             // fallthrough: a ScriptProperty is a ScriptPattern but inside a JS Object. It gets the
             // same completions as a ScriptPattern.
+            Q_FALLTHROUGH();
         case DomType::ScriptPattern:
             insideScriptPattern(currentParent, positionInfo, result);
             return;
@@ -1974,8 +2175,10 @@ void QQmlLSCompletion::collectCompletions(const DomItem &currentItem,
 
         // TODO: Implement those statements.
         // In the meanwhile, suppress completions to avoid weird behaviors.
-        case DomType::ScriptArray:
         case DomType::ScriptObject:
+            structuredValueMembers(currentParent, QString(), result);
+            return;
+        case DomType::ScriptArray:
         case DomType::ScriptElision:
         case DomType::ScriptArrayEntry:
             return;

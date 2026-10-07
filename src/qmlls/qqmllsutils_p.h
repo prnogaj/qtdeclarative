@@ -276,6 +276,27 @@ checkNameForRename(const DomItem &item, const QString &newName,
 RenameUsages renameUsagesOf(const DomItem &item, const QString &newName,
                             const std::optional<ExpressionType> &targetType = std::nullopt);
 std::optional<ExpressionType> resolveExpressionType(const DomItem &item, ResolveOptions);
+
+// The signature of a callback that can be written as argument of a call, with the names of the
+// types as they can be written in type annotations. The callback may take fewer parameters than
+// it is called with, but not fewer than minimumParameters. An empty returnType means that the
+// callback may return whatever it likes.
+struct CallbackSignature
+{
+    struct Parameter
+    {
+        QString name;
+        QString type;
+    };
+    QList<Parameter> parameters;
+    qsizetype minimumParameters = 1;
+    QString returnType;
+};
+std::optional<CallbackSignature> callbackSignatureForArgument(const DomItem &argument);
+std::optional<CallbackSignature> signalHandlerSignature(const DomItem &binding);
+bool isPromiseExpression(const DomItem &expression);
+QQmlJSScope::ConstPtr structuredTypeOfObjectLiteral(const DomItem &scriptObject, int depth = 0);
+QStringList membersOfObjectLiteral(const DomItem &scriptObject);
 bool isValidEcmaScriptIdentifier(QStringView view);
 
 std::pair<QString, QStringList> cmakeBuildCommand(const QString &path, int cmakeJobs = 0);

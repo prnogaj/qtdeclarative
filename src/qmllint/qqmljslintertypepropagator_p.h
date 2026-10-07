@@ -64,9 +64,15 @@ private:
     void propagateCall(const QList<QQmlJSMetaMethod> &methods, int argc, int argv,
                        QQmlJSRegisterContent scope) override;
     void propagateTranslationMethod_SAcheck(const QString &methodName) override;
+    bool propagatesValueTypeFactories() const override { return true; }
     void warnAboutTypeCoercion(int lhs) override;
 
     bool checkTypeResolved(const QQmlJSScope::ConstPtr &type);
+    void checkStructuredValue(QQmlJSRegisterContent value, const QQmlJSScope::ConstPtr &target,
+                              int depth = 0);
+    enum MemberPart { MemberName, MemberValue };
+    QQmlJS::SourceLocation objectLiteralMemberLocation(
+            int instructionOffset, const QString &name, MemberPart part = MemberName) const;
     void checkWrite(const QQmlJSRegisterContent &callBase, const QString &propertyName);
 
     QQmlSA::PassManager *m_passManager = nullptr;

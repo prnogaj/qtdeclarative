@@ -987,6 +987,11 @@ void TestQmllint::dirtyQmlCode_data()
                .addFix("Did you mean \"Hours\"?"_L1, Edit{ "Hours"_L1, 13, 62 })
                .build()
             << defaultOptions;
+    QTest::newRow("FutureMemberNotFound")
+            << QStringLiteral("futureMemberNotFound.qml")
+            << ResultBuilder::singleExpected(
+                       "Member \"finally\" not found on type \"QFuture<int>\""_L1, 7, 27)
+            << defaultOptions;
     QTest::newRow("MemberNotFound")
             << QStringLiteral("memberNotFound.qml")
             << ResultBuilder::singleExpected("Member \"foo\" not found on type \"memberNotFound\""_L1, 6, 31)
@@ -1426,6 +1431,71 @@ void TestQmllint::dirtyQmlCode_data()
             << QStringLiteral("jsVarDeclarationsWriteConst.qml")
             << ResultBuilder::singleExpected("Cannot assign to read-only property constProp"_L1)
             << defaultOptions;
+    // Callbacks are linted with the types of what they are called with and of the variables
+    // they capture.
+    QTest::newRow("closureMembers")
+            << QStringLiteral("closureMembers.qml")
+            << ResultBuilder()
+               .addExpected("Member \"objectNam\" not found on type \"QObject\""_L1, 12, 51)
+               .addExpected("Member \"nope\" not found on type \"double\""_L1, 13, 56)
+               .addExpected("Member \"neither\" not found on type \"int\""_L1, 13, 65)
+               .addExpected("Member \"lenght\" not found on type \"QString\""_L1, 14, 61)
+               .addExpected("Member \"inner\" not found on type \"QObject\""_L1, 16, 55)
+               .addExpected("Member \"missing\" not found on type \"closureMembers\""_L1, 22, 48)
+               .addExpected("Member \"wrong\" not found on type \"qlonglong\""_L1, 22, 64)
+               .addExpected("Member \"typo\" not found on type \"QObject\""_L1, 23, 42)
+               .addExpected("Member \"lenght\" not found on type \"QList<double>\""_L1, 27, 63)
+               .addExpected("Member \"wrong\" not found on type \"double\""_L1, 27, 74)
+               .build()
+            << defaultOptions;
+    // What Qt.vector3d() and friends return has a type.
+    QTest::newRow("valueTypeFactoryMembers")
+            << QStringLiteral("valueTypeFactoryMembers.qml")
+            << ResultBuilder()
+               .addExpected("Member \"nope\" not found on type \"QVector3D\""_L1, 4, 43)
+               .addExpected("Member \"lenght\" not found on type \"QVector2D\""_L1, 7, 40)
+               .build()
+            << defaultOptions;
+    // A callback connected to a signal gets the arguments of the signal.
+    QTest::newRow("closureSignalConnect")
+            << QStringLiteral("closureSignalConnect.qml")
+            << ResultBuilder()
+               .addExpected("Member \"lenght\" not found on type \"QString\""_L1, 10, 63)
+               .addExpected("Member \"nope\" not found on type \"double\""_L1, 10, 75)
+               .addExpected("Member \"intervall\" not found on type \"Timer\""_L1, 12, 61)
+               .build()
+            << defaultOptions;
+    // QTBUG-139463: an object literal that becomes a structured value can only name
+    // properties of that type.
+    QTest::newRow("structuredValueMembers")
+            << QStringLiteral("structuredValueMembers.qml")
+            << ResultBuilder()
+               .addExpected("Member \"nonexistentProp\" not found on type \"MyStructuredType\""_L1, 13, 9)
+               .addExpected("Member \"nmber\" not found on type \"MyStructuredType\""_L1, 16, 55)
+               .addExpected("Member \"thruth\" not found on type \"MyStructuredType\""_L1, 18, 69)
+               .addExpected("Member \"extra\" not found on type \"MyStructuredType\""_L1, 21, 29)
+               .addExpected("Member \"wrong\" not found on type \"MyStructuredType\""_L1, 25, 40)
+               .addExpected("Member \"alsoWrong\" not found on type \"MyStructuredType\""_L1, 26, 39)
+               .build()
+            << defaultOptions;
+    // What is coerced on the way into a structured value is only reported on request.
+    {
+        CallQmllintOptions withCoercion;
+        withCoercion.categorySeverityOverrides.insert(
+                u"structured-value-coercion"_s, QQmlJS::WarningSeverity::Warning);
+        QTest::newRow("structuredValueCoercion")
+                << QStringLiteral("structuredValueCoercion.qml")
+                << ResultBuilder()
+                   .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The QString assigned to it is coerced"_L1, 10, 17)
+                   .addExpected("Member \"truth\" of \"MyStructuredType\" has type bool. The QString assigned to it is coerced"_L1, 11, 16)
+                   .addExpected("Member \"label\" of \"MyOuterType\" has type QString. The int assigned to it is coerced"_L1, 15, 44)
+                   .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The bool assigned to it is coerced"_L1, 15, 64)
+                   .addExpected("Member \"truth\" of \"MyStructuredType\" has type bool. The int assigned to it is coerced"_L1, 15, 77)
+                   .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The QString assigned to it is coerced"_L1, 18, 26)
+                   .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The number assigned to it is no int and is coerced"_L1, 25, 52)
+                   .build()
+                << withCoercion;
+    }
     QTest::newRow("lintInnerFunctionsToo")
             << QStringLiteral("lintInnerFunctionsToo.qml")
             << ResultBuilder()
@@ -3178,6 +3248,14 @@ void TestQmllint::cleanQmlCode_data()
     const CallQmllintOptions defaultOptions;
 
     QTest::newRow("2Behavior") << QStringLiteral("2behavior.qml") << defaultOptions;
+    QTest::newRow("futureThen") << QStringLiteral("futureThen.qml") << defaultOptions;
+    // The category for coercions is off by default.
+    QTest::newRow("structuredValueCoercionOff")
+            << QStringLiteral("structuredValueCoercion.qml") << defaultOptions;
+    QTest::newRow("structuredValueMembersClean")
+            << QStringLiteral("structuredValueMembersClean.qml") << defaultOptions;
+    QTest::newRow("closureMembersClean")
+            << QStringLiteral("closureMembersClean.qml") << defaultOptions;
     QTest::newRow("Accessible") << QStringLiteral("accessible.qml") << defaultOptions;
     QTest::newRow("AddressableValue") << QStringLiteral("addressableValue.qml") << defaultOptions;
     QTest::newRow("AttachedProps") << QStringLiteral("AttachedProps.qml") << defaultOptions;
@@ -4944,6 +5022,17 @@ void TestQmllint::quickPlugin()
             .addExpected("Cannot specify x for items inside Flow. Flow will not function."_L1)
             .addExpected("Cannot specify y for items inside Flow. Flow will not function."_L1)
             .build(), withQuickPlugin);
+    // Closures are analyzed several times. The passes of the plugin see them once.
+    {
+        const auto message
+                = "ToolTip attached property must be attached to an object deriving from Item"_L1;
+        runTest("pluginQuick_closures.qml",
+                ResultBuilder()
+                .addExpected(message, 12, 58)
+                .addExpected(message, 17, 62)
+                .addExpected(message, 22, 51)
+                .build(), withQuickPlugin);
+    }
     runTest("pluginQuick_attached.qml",
             ResultBuilder()
             .addExpected("ToolTip attached property must be attached to an object deriving from Item"_L1)

@@ -1570,6 +1570,55 @@ QQmlJSRegisterContent QQmlJSTypeResolver::lengthProperty(
             QQmlJSRegisterContent::InvalidLookupIndex, QQmlJSRegisterContent::Property, scope);
 }
 
+/*!
+    \internal
+    Returns \c true if \a type is a QFuture<T>. The QML engine exposes such a future as a
+    thenable JavaScript object with \c then() and \c catch() methods. qmltyperegistrar
+    describes it as an opaque value type named after the C++ type moc reports.
+*/
+bool QQmlJSTypeResolver::isFuture(const QQmlJSScope::ConstPtr &type) const
+{
+    return type && type->isOpaqueType() && type->internalName().startsWith(u"QFuture<"_s);
+}
+
+/*!
+    \internal
+    Returns the type a QFuture<T> of type \a type produces, that is the type of the value its
+    then() callback receives. Returns a null pointer if we don't know that type, or if there
+    is no value, as for QFuture<void>.
+*/
+QQmlJSScope::ConstPtr QQmlJSTypeResolver::futureResultType(
+        const QQmlJSScope::ConstPtr &type) const
+{
+    if (!isFuture(type))
+        return {};
+
+    const QString internalName = type->internalName();
+    if (!internalName.endsWith(u'>'))
+        return {};
+
+    const auto byCppName = [this](QStringView cppName) -> QQmlJSScope::ConstPtr {
+        cppName = cppName.trimmed();
+        if (cppName.endsWith(u'*'))
+            cppName = cppName.chopped(1).trimmed();
+        if (cppName.isEmpty())
+            return {};
+        return typeForName("$internal$."_L1 + cppName);
+    };
+
+    const QStringView result
+            = QStringView(internalName).mid(8, internalName.size() - 9).trimmed();
+    if (result == u"void")
+        return {};
+
+    if (result.startsWith(u"QList<") && result.endsWith(u'>')) {
+        const QQmlJSScope::ConstPtr element = byCppName(result.mid(6, result.size() - 7));
+        return element ? element->listType() : QQmlJSScope::ConstPtr();
+    }
+
+    return byCppName(result);
+}
+
 QQmlJSRegisterContent QQmlJSTypeResolver::memberType(
         QQmlJSRegisterContent type, const QString &name, int baseLookupIndex,
         int resultLookupIndex) const

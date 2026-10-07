@@ -113,6 +113,7 @@
 --- Lookahead handling
 %token T_FORCE_DECLARATION "(force decl)"
 %token T_FORCE_BLOCK "(force block)"
+%token T_ARROW_AFTER_TYPE "(arrow after type)"
 %token T_FOR_LOOKAHEAD_OK "(for lookahead ok)"
 
 --%left T_PLUS T_MINUS
@@ -432,6 +433,10 @@ protected:
     SourceLocation coverExpressionErrorLocation;
     CoverExpressionType coverExpressionType = CE_Invalid;
 
+    // Set while the return type of an arrow function is parsed. The "=>" that ends it is then
+    // preceded by a T_ARROW_AFTER_TYPE. See the ArrowReturnTypeMarker rule.
+    bool arrowReturnTypePending = false;
+
     QList<DiagnosticMessage> diagnostic_messages;
     bool m_identifierInsertionEnabled = false;
     bool m_incompleteBindingsEnabled = false;
@@ -640,6 +645,7 @@ bool Parser::parse(int startToken)
 
     tos = -1;
     program = 0;
+    arrowReturnTypePending = false;
     m_pendingCoverDiagnostics.clear();
 
     do {
@@ -658,6 +664,11 @@ bool Parser::parse(int startToken)
                 yytokenspell = lexer->tokenSpell();
                 yytokenraw = lexer->rawString();
                 yylloc = location(lexer);
+                if (arrowReturnTypePending && yytoken == T_ARROW) {
+                    // Tell the grammar that the type is complete, then deliver the arrow.
+                    arrowReturnTypePending = false;
+                    pushToken(T_ARROW_AFTER_TYPE);
+                }
             } else {
                 yytoken = first_token->token;
                 yylval = first_token->dval;
@@ -4305,6 +4316,92 @@ ArrowParameters: BindingIdentifier;
         AST::FormalParameterList *list = (new (pool) AST::FormalParameterList(nullptr, e))->finish(pool);
         AST::FunctionExpression *f = new (pool) AST::FunctionExpression(QStringView(), list, nullptr);
         f->functionToken = loc(1).startZeroLengthLocation();
+        sym(1).FunctionExpression = f;
+    } break;
+./
+
+-- Experiment: parameters of arrow functions with type annotations, and a return type after them:
+--     (a: real, b: int) => ...        (a: real, b: int): real => ...
+-- Either all parameters are annotated or none. "(a: real)" is not an expression, so this needs
+-- no cover grammar: the colon after the first identifier tells the two apart. A return type is
+-- only possible after such a list. After "()" or "(a)" a colon could also belong to a
+-- conditional expression.
+TypedArrowParameterList: BindingIdentifier TypeAnnotation;
+/.
+    case $rule_number: {
+        AST::PatternElement *e = new (pool) AST::PatternElement(stringRef(1), sym(2).TypeAnnotation, nullptr, AST::PatternElement::Binding);
+        e->identifierToken = loc(1);
+        sym(1).Node = new (pool) AST::FormalParameterList(nullptr, e);
+    } break;
+./
+
+TypedArrowParameterList: TypedArrowParameterList T_COMMA BindingIdentifier TypeAnnotation;
+/.
+    case $rule_number: {
+        AST::PatternElement *e = new (pool) AST::PatternElement(stringRef(3), sym(4).TypeAnnotation, nullptr, AST::PatternElement::Binding);
+        e->identifierToken = loc(3);
+        sym(1).FormalParameterList->commaToken = loc(2);
+        sym(1).Node = new (pool) AST::FormalParameterList(sym(1).FormalParameterList, e);
+    } break;
+./
+
+ArrowParameters: T_LPAREN TypedArrowParameterList T_RPAREN;
+/.
+    case $rule_number: {
+        AST::FormalParameterList *list = sym(2).FormalParameterList->finish(pool);
+        if (!ensureNoFunctionTypeAnnotations(nullptr, list))
+            return false;
+        AST::FunctionExpression *f = new (pool) AST::FunctionExpression(QStringView(), list, nullptr);
+        f->functionToken = loc(1).startZeroLengthLocation();
+        f->lparenToken = loc(1);
+        f->rparenToken = loc(3);
+        sym(1).FunctionExpression = f;
+    } break;
+./
+
+-- A type is a member expression to the grammar. If "=>" could follow a type, LALR(1) could not
+-- tell "a => a" from the start of an expression anymore: "a" followed by "=>" would be reduced as
+-- an expression. So the parser inserts a T_ARROW_AFTER_TYPE before the "=>" that ends the return
+-- type, and that is what follows the type here.
+ArrowReturnTypeMarker: ;
+/.
+    case $rule_number: {
+        arrowReturnTypePending = true;
+    } break;
+./
+
+ArrowParameters: T_LPAREN TypedArrowParameterList T_RPAREN T_COLON ArrowReturnTypeMarker Type T_ARROW_AFTER_TYPE;
+/.
+    case $rule_number: {
+        arrowReturnTypePending = false;
+        AST::TypeAnnotation *returnType = new (pool) AST::TypeAnnotation(sym(6).Type);
+        returnType->colonToken = loc(4);
+        AST::FormalParameterList *list = sym(2).FormalParameterList->finish(pool);
+        if (!ensureNoFunctionTypeAnnotations(returnType, list))
+            return false;
+        AST::FunctionExpression *f = new (pool) AST::FunctionExpression(QStringView(), list, nullptr, returnType);
+        f->functionToken = loc(1).startZeroLengthLocation();
+        f->lparenToken = loc(1);
+        f->rparenToken = loc(3);
+        sym(1).FunctionExpression = f;
+    } break;
+./
+
+-- The same without parameters:    (): real => ...
+-- "()" alone is no expression, so a colon after it cannot belong to anything else. The parser
+-- still has to choose between reducing "()" and shifting the colon. It shifts.
+ArrowParameters: T_LPAREN T_RPAREN T_COLON ArrowReturnTypeMarker Type T_ARROW_AFTER_TYPE;
+/.
+    case $rule_number: {
+        arrowReturnTypePending = false;
+        AST::TypeAnnotation *returnType = new (pool) AST::TypeAnnotation(sym(5).Type);
+        returnType->colonToken = loc(3);
+        if (!ensureNoFunctionTypeAnnotations(returnType, nullptr))
+            return false;
+        AST::FunctionExpression *f = new (pool) AST::FunctionExpression(QStringView(), nullptr, nullptr, returnType);
+        f->functionToken = loc(1).startZeroLengthLocation();
+        f->lparenToken = loc(1);
+        f->rparenToken = loc(2);
         sym(1).FunctionExpression = f;
     } break;
 ./
