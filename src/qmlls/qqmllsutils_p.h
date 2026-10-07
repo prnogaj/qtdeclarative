@@ -293,6 +293,7 @@ struct CallbackSignature
     QString returnType;
 };
 std::optional<CallbackSignature> callbackSignatureForArgument(const DomItem &argument);
+std::optional<CallbackSignature> signalHandlerSignature(const DomItem &binding);
 bool isPromiseExpression(const DomItem &expression);
 bool isValidEcmaScriptIdentifier(QStringView view);
 

@@ -96,6 +96,10 @@ private:
     DomItem ownerOfQualifiedExpression(const DomItem &qualifiedExpression) const;
     void suggestJSExpressionCompletion(const DomItem &context, BackInsertIterator it) const;
     void arrowFunctionSnippets(const DomItem &expression, BackInsertIterator result) const;
+    void callbackSnippets(const QQmlLSUtils::CallbackSignature &signature,
+                          BackInsertIterator result) const;
+    void signalHandlerSnippets(const QQmlLSCompletionPosition &positionInfo,
+                               BackInsertIterator result) const;
 
     void suggestBindingCompletion(const DomItem &itemAtPosition, BackInsertIterator it) const;
 

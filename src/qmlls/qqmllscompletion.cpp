@@ -656,15 +656,14 @@ void QQmlLSCompletion::suggestJSExpressionCompletion(const DomItem &scriptIdenti
 
 /*!
 \internal
-Suggests arrow functions with type annotations where an expression is expected. As the callback
-of a method that tells us what it calls it with, the parameter gets that type.
+Suggests arrow functions with the given signature: one snippet for each number of parameters
+the callback may take.
 */
-void QQmlLSCompletion::arrowFunctionSnippets(const DomItem &expression,
-                                             BackInsertIterator result) const
+void QQmlLSCompletion::callbackSnippets(const QQmlLSUtils::CallbackSignature &signature,
+                                        BackInsertIterator result) const
 {
-    // Where we know what the callback is called with, write its signature: one snippet for
-    // each number of parameters it may take.
-    if (const auto callback = QQmlLSUtils::callbackSignatureForArgument(expression)) {
+    const QQmlLSUtils::CallbackSignature *callback = &signature;
+    {
         const bool returnsNothing = callback->returnType == "void"_L1;
         const QByteArray body = returnsNothing ? "{ statements... }" : "expression";
         const QByteArray bodySnippet = returnsNothing ? "{\n\t$0\n}" : "$0";
@@ -699,6 +698,19 @@ void QQmlLSCompletion::arrowFunctionSnippets(const DomItem &expression,
                                  QByteArray(text + "): " + returnSnippet + " => " + bodySnippet));
         }
     }
+
+}
+
+/*!
+\internal
+Suggests arrow functions with type annotations where an expression is expected. As the callback
+of a method that tells us what it calls it with, the parameter gets that type.
+*/
+void QQmlLSCompletion::arrowFunctionSnippets(const DomItem &expression,
+                                             BackInsertIterator result) const
+{
+    if (const auto callback = QQmlLSUtils::callbackSignatureForArgument(expression))
+        callbackSnippets(*callback, result);
 
     result = makeSnippet("(parameter: type): returnType => expression",
                          "(${1:parameter}: ${2:type}): ${3:returnType} => $0");
@@ -1850,6 +1862,38 @@ QQmlLSCompletion::completions(const DomItem &currentItem,
     return result;
 }
 
+/*!
+\internal
+The handler of a signal can be a function that takes the arguments of the signal. Offer that
+where the handler starts: right after the colon, in front of whatever is written there, or while
+the first word of it is being typed.
+*/
+void QQmlLSCompletion::signalHandlerSnippets(const QQmlLSCompletionPosition &positionInfo,
+                                             BackInsertIterator result) const
+{
+    const DomItem item = positionInfo.itemAtPosition;
+    const auto isBinding = [](const DomItem &candidate) {
+        return candidate.internalKind() == DomType::Binding;
+    };
+    const DomItem binding = isBinding(item) ? item : item.filterUp(
+            [](DomType type, const QQmlJS::Dom::DomItem &) { return type == DomType::Binding; },
+            FilterUpOptions::ReturnOuter);
+    if (!binding || !isBinding(binding) || !cursorAfterColon(binding, positionInfo))
+        return;
+
+    const DomItem value = binding.field(Fields::value);
+    const auto valueLocation = value ? FileLocations::treeOf(value) : FileLocations::Tree();
+    const bool isInFrontOfValue = !valueLocation
+            || positionInfo.offset() <= valueLocation->info().fullRegion.begin();
+    const bool isWholeValue = isBinding(item.directParent())
+            || isBinding(item.directParent().directParent());
+    if (!isInFrontOfValue && !isWholeValue)
+        return;
+
+    if (const auto handler = QQmlLSUtils::signalHandlerSignature(binding))
+        callbackSnippets(*handler, result);
+}
+
 void QQmlLSCompletion::collectCompletions(const DomItem &currentItem,
                                           const CompletionContextStrings &contextStrings,
                                           BackInsertIterator result) const
@@ -1876,6 +1920,7 @@ void QQmlLSCompletion::collectCompletions(const DomItem &currentItem,
     (required to provide completion at the correct position, for example for attached properties).
     */
     const QQmlLSCompletionPosition positionInfo{ currentItem, contextStrings };
+    signalHandlerSnippets(positionInfo, result);
     for (DomItem currentParent = currentItem; currentParent;
          currentParent = currentParent.directParent()) {
         const DomType currentType = currentParent.internalKind();

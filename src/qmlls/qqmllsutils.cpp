@@ -2002,6 +2002,8 @@ static std::optional<ExpressionType> resolveExpressionTypeForCallback(const DomI
     return resolveExpressionType(item, ResolveActualTypeForFieldMemberExpression);
 }
 
+static CallbackSignature namedSignature(const ResolvedCallback &resolved);
+
 /*!
 \internal
 If a callback can be written at \a argument whose signature we know, returns that signature
@@ -2010,36 +2012,58 @@ QQmlJSCallbackSignatures.
 */
 std::optional<CallbackSignature> callbackSignatureForArgument(const DomItem &argument)
 {
-    std::optional<ResolvedCallback> callback = callbackOf(argument);
-
-    // The handler of a signal, written as a function: onSomeSignal: (a, b) => ...
-    if (!callback && argument.directParent().internalKind() == DomType::ScriptExpression
-            && argument.directParent().directParent().internalKind() == DomType::Binding) {
-        const auto binding = resolveExpressionType(
-                argument.directParent().directParent(), ResolveOwnerType);
-        const auto qmlFile = argument.containingFile().ownerAs<QmlFile>();
-        if (binding && binding->type == SignalHandlerIdentifier && binding->name
-                && binding->semanticScope && qmlFile && qmlFile->typeResolver()) {
-            const auto signalName = QQmlSignalNames::handlerNameToSignalName(*binding->name);
-            const auto signalDefinitions = signalName
-                    ? binding->semanticScope->methods(*signalName) : QList<QQmlJSMetaMethod>();
-            if (!signalDefinitions.isEmpty()) {
-                callback = ResolvedCallback();
-                callback->resolver = qmlFile->typeResolver();
-                callback->minimumParameters = 0;
-                callback->result = QQmlJSCallbackSignatures::Result::Ignored;
-                const auto signalParameters = signalDefinitions.front().parameters();
-                for (qsizetype i = 0; i < signalParameters.size(); ++i) {
-                    QString name = signalParameters[i].name();
-                    if (name.isEmpty())
-                        name = u"argument%1"_s.arg(i + 1);
-                    callback->parameters.append({ name, signalParameters[i].type() });
-                }
-            }
-        }
-    }
+    const std::optional<ResolvedCallback> callback = callbackOf(argument);
     if (!callback)
         return {};
+    return namedSignature(*callback);
+}
+
+/*!
+\internal
+If \a binding is the handler of a signal, returns the signature of a function that handles it:
+onSomeSignal: (a, b) => ... The handler of a property change takes no arguments.
+*/
+std::optional<CallbackSignature> signalHandlerSignature(const DomItem &binding)
+{
+    if (binding.internalKind() != DomType::Binding)
+        return {};
+
+    const auto qmlFile = binding.containingFile().ownerAs<QmlFile>();
+    const auto handler = resolveExpressionType(binding, ResolveOwnerType);
+    if (!handler || !qmlFile || !qmlFile->typeResolver())
+        return {};
+
+    ResolvedCallback callback;
+    callback.resolver = qmlFile->typeResolver();
+    callback.minimumParameters = 0;
+    callback.result = QQmlJSCallbackSignatures::Result::Ignored;
+
+    if (handler->type == PropertyChangedHandlerIdentifier)
+        return namedSignature(callback);
+
+    if (handler->type != SignalHandlerIdentifier || !handler->name || !handler->semanticScope)
+        return {};
+
+    const auto signalName = QQmlSignalNames::handlerNameToSignalName(*handler->name);
+    const auto signalDefinitions = signalName
+            ? handler->semanticScope->methods(*signalName) : QList<QQmlJSMetaMethod>();
+    if (signalDefinitions.isEmpty())
+        return {};
+
+    const auto signalParameters = signalDefinitions.front().parameters();
+    for (qsizetype i = 0; i < signalParameters.size(); ++i) {
+        QString name = signalParameters[i].name();
+        if (name.isEmpty())
+            name = u"argument%1"_s.arg(i + 1);
+        callback.parameters.append({ name, signalParameters[i].type() });
+    }
+    return namedSignature(callback);
+}
+
+// The callback with the names of the types as they can be written in this document
+static CallbackSignature namedSignature(const ResolvedCallback &resolved)
+{
+    const ResolvedCallback *callback = &resolved;
 
     // The name the type has in this document. A list is written as list<element>, and what we
     // don't know or cannot name is a var.

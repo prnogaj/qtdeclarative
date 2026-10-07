@@ -4868,6 +4868,47 @@ void tst_qmlls_utils::completions_data()
             << testFile("completions/callbackReceivers.qml") << 23 << 31
             << ExpectedCompletions{ { "(parameter: type): returnType => expression"_L1, CompletionItemKind::Snippet } }
             << QStringList{ u"(element: var): void => { statements... }"_s };
+
+    // The handler of a signal as a function with the arguments of the signal, wherever the
+    // handler starts
+    QTest::newRow("handlerSnippet-afterColon")
+            << testFile("completions/signalHandlerSnippets.qml") << 9 << 13
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real, name: string): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("handlerSnippet-inFrontOfFunction")
+            << testFile("completions/signalHandlerSnippets.qml") << 9 << 14
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real): void => { statements... }"_L1, CompletionItemKind::Snippet },
+                                    { "(x: real, name: string): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("handlerSnippet-insideFunction")
+            << testFile("completions/signalHandlerSnippets.qml") << 9 << 35
+            << ExpectedCompletions{ { "text"_L1, CompletionItemKind::Property } }
+            << QStringList{ u"(): void => { statements... }"_s, u"(x: real, name: string): void => { statements... }"_s };
+
+    QTest::newRow("handlerSnippet-firstWord")
+            << testFile("completions/signalHandlerSnippets.qml") << 10 << 17
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{ u"(x: real): void => { statements... }"_s };
+
+    QTest::newRow("handlerSnippet-inFrontOfExpression")
+            << testFile("completions/signalHandlerSnippets.qml") << 12 << 22
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
+
+    QTest::newRow("handlerSnippet-insideExpression")
+            << testFile("completions/signalHandlerSnippets.qml") << 12 << 28
+            << ExpectedCompletions{ { "text"_L1, CompletionItemKind::Property } }
+            << QStringList{ u"(): void => { statements... }"_s };
+
+    QTest::newRow("handlerSnippet-propertyChange")
+            << testFile("completions/signalHandlerSnippets.qml") << 14 << 21
+            << ExpectedCompletions{ { "(): void => { statements... }"_L1, CompletionItemKind::Snippet } }
+            << QStringList{  };
 }
 
 void tst_qmlls_utils::completions()
