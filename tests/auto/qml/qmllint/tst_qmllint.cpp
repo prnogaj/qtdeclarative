@@ -1495,6 +1495,26 @@ void TestQmllint::dirtyQmlCode_data()
                    .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The number assigned to it is no int and is coerced"_L1, 24, 52)
                    .build()
                 << withCoercion;
+
+        // Literals over several lines, with comments and strings that look like members
+        QTest::newRow("structuredValueLayout")
+                << QStringLiteral("structuredValueLayout.qml")
+                << ResultBuilder()
+                   .addExpected("Member \"nonexistentProp\" not found on type \"MyStructuredType\""_L1, 13, 9)
+                   .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The QString assigned to it is coerced"_L1, 20, 17)
+                   .addExpected("Member \"wrongOne\" not found on type \"MyStructuredType\""_L1, 21, 13)
+                   .addExpected("Member \"thruth\" not found on type \"MyStructuredType\""_L1, 30, 13)
+                   .addExpected("Member \"truth\" of \"MyStructuredType\" has type bool. The QString assigned to it is coerced"_L1, 38, 16)
+                   .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The QString assigned to it is coerced"_L1, 47, 21)
+                   .addExpected("Member \"first\" not found on type \"MyStructuredType\""_L1, 55, 13)
+                   .addExpected("Member \"second\" not found on type \"MyStructuredType\""_L1, 59, 13)
+                   .addExpected("Member \"truth\" of \"MyStructuredType\" has type bool. The QString assigned to it is coerced"_L1, 64, 46)
+                   .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The QString assigned to it is coerced"_L1, 64, 69)
+                   .addExpected("Member \"wrong\" not found on type \"MyStructuredType\""_L1, 64, 74)
+                   .addExpected("Member \"number\" of \"MyStructuredType\" has type int. The QString assigned to it is coerced"_L1, 67, 43)
+                   .addExpected("Member \"truth\" of \"MyStructuredType\" has type bool. The QString assigned to it is coerced"_L1, 67, 53)
+                   .build()
+                << withCoercion;
     }
     QTest::newRow("lintInnerFunctionsToo")
             << QStringLiteral("lintInnerFunctionsToo.qml")

@@ -22,128 +22,183 @@ QQmlJSLinterTypePropagator::QQmlJSLinterTypePropagator(
 {
 }
 
-/*!
- * \internal
- * Where the members of the object literal defined by the instruction at \a instructionOffset
- * are written, the one called \a name is somewhere after the start of the literal. Point at
- * its name, or at its value if \a part says so, if we find it, and at the literal otherwise.
- */
-QQmlJS::SourceLocation QQmlJSLinterTypePropagator::objectLiteralMemberLocation(
-        int instructionOffset, const QString &name, MemberPart part) const
+// The members of the object literal that starts with the brace at the given offset, with
+// where their names and values are written. Empty if there is no object literal.
+QList<QQmlJSLinterTypePropagator::WrittenMember>
+QQmlJSLinterTypePropagator::writtenMembers(qsizetype start) const
 {
-    QQmlJS::SourceLocation location = sourceLocation(instructionOffset);
+    const QString code = m_logger->code();
+    const qsizetype size = code.size();
+    if (start < 0 || start >= size || code[start] != u'{')
+        return {};
+
+    const auto startsComment = [&](qsizetype i) {
+        return i + 1 < size && code[i] == u'/' && (code[i + 1] == u'/' || code[i + 1] == u'*');
+    };
+    const auto skipBlanks = [&](qsizetype i) {
+        while (i < size) {
+            if (code[i].isSpace()) {
+                ++i;
+            } else if (startsComment(i)) {
+                const qsizetype end = code[i + 1] == u'/'
+                        ? code.indexOf(u'\n', i) : code.indexOf(u"*/"_s, i + 2);
+                i = end < 0 ? size : end + (code[i + 1] == u'/' ? 1 : 2);
+            } else {
+                break;
+            }
+        }
+        return i;
+    };
+    const auto isQuote = [&](qsizetype i) {
+        return code[i] == u'"' || code[i] == u'\'' || code[i] == u'`';
+    };
+    const auto skipString = [&](qsizetype i) {
+        const QChar quote = code[i];
+        for (++i; i < size && code[i] != quote; ++i) {
+            if (code[i] == u'\\')
+                ++i;
+        }
+        return qMin(i + 1, size);
+    };
+    // up to the comma or brace that ends the member
+    const auto skipValue = [&](qsizetype i) {
+        for (int depth = 0; i < size;) {
+            const QChar c = code[i];
+            if (isQuote(i)) {
+                i = skipString(i);
+            } else if (startsComment(i)) {
+                i = skipBlanks(i);
+            } else if (c == u'(' || c == u'[' || c == u'{') {
+                ++depth;
+                ++i;
+            } else if (c == u')' || c == u']' || c == u'}') {
+                if (depth-- == 0)
+                    break;
+                ++i;
+            } else if (c == u',' && depth == 0) {
+                break;
+            } else {
+                ++i;
+            }
+        }
+        return i;
+    };
+
+    QList<WrittenMember> members;
+    qsizetype i = skipBlanks(start + 1);
+    while (i < size && code[i] != u'}') {
+        WrittenMember member;
+        member.nameBegin = i;
+        if (isQuote(i)) {
+            i = skipString(i);
+            member.name = code.mid(member.nameBegin + 1, i - member.nameBegin - 2);
+        } else {
+            while (i < size && !code[i].isSpace() && code[i] != u':' && code[i] != u','
+                   && code[i] != u'}' && code[i] != u'(' && code[i] != u';'
+                   && !startsComment(i)) {
+                ++i;
+            }
+            member.name = code.mid(member.nameBegin, i - member.nameBegin);
+        }
+        member.nameEnd = i;
+        if (member.name.isEmpty())
+            return {};
+
+        i = skipBlanks(i);
+        if (i < size && code[i] == u':') {
+            member.valueBegin = skipBlanks(i + 1);
+            i = skipValue(member.valueBegin);
+            member.valueEnd = i;
+            while (member.valueEnd > member.valueBegin && code[member.valueEnd - 1].isSpace())
+                --member.valueEnd;
+        } else {
+            i = skipValue(i);
+        }
+        members.append(member);
+
+        if (i < size && code[i] == u',')
+            i = skipBlanks(i + 1);
+    }
+    return i < size ? members : QList<WrittenMember>();
+}
+
+// Where the object literal with the given members, defined by the given instruction, starts
+QQmlJS::SourceLocation QQmlJSLinterTypePropagator::objectLiteralLocation(
+        int instructionOffset, const QStringList &names) const
+{
+    const QQmlJS::SourceLocation location = sourceLocation(instructionOffset);
     const QString code = m_logger->code();
     if (!location.isValid() || location.offset >= code.size())
         return location;
 
-    // The instruction may be attributed to the start of the literal or to something inside
-    // of it, for example the last member. In the latter case, go back to the brace that opens
-    // the literal.
-    qsizetype start = location.offset;
-    while (start < code.size() && (code[start].isSpace() || code[start] == u'('))
-        ++start;
-    if (start >= code.size() || code[start] != u'{') {
-        int depth = 0;
-        for (start = qsizetype(location.offset) - 1; start >= 0; --start) {
-            const QChar c = code[start];
-            if (c == u'}') {
-                ++depth;
-            } else if (c == u'{') {
-                if (depth == 0)
-                    break;
-                --depth;
-            }
-        }
-        if (start < 0)
-            return location;
+    QStringList expected = names;
+    expected.sort();
+    const auto isLiteral = [&](qsizetype start) {
+        QStringList written;
+        const auto members = writtenMembers(start);
+        for (const WrittenMember &member : members)
+            written.append(member.name);
+        written.sort();
+        return !written.isEmpty() && written == expected;
+    };
 
-        // Count the lines and columns back to there.
-        for (qsizetype i = location.offset; i > start; --i) {
-            if (code[i - 1] == u'\n')
-                --location.startLine;
+    // The instruction may point into the literal, for example at its last member, ...
+    int depth = 0;
+    for (qsizetype i = qsizetype(location.offset) - 1, tries = 0; i >= 0 && tries < 8; --i) {
+        if (code[i] == u'}') {
+            ++depth;
+        } else if (code[i] == u'{') {
+            if (depth > 0) {
+                --depth;
+                continue;
+            }
+            if (isLiteral(i))
+                return locationInDocument(i, 1);
+            ++tries;
         }
-        const qsizetype lineStart = code.lastIndexOf(u'\n', start);
-        location.startColumn = quint32(start - lineStart);
-        location.offset = quint32(start);
     }
 
-    static const qsizetype searchLimit = 4096;
-    const QStringView text = QStringView(code).mid(location.offset, searchLimit);
-    for (qsizetype i = text.indexOf(name); i >= 0; i = text.indexOf(name, i + 1)) {
-        // The name as a whole, with or without quotes, and then a colon
-        qsizetype begin = i;
-        qsizetype end = i + name.size();
-        if (begin > 0 && (text[begin - 1].isLetterOrNumber() || text[begin - 1] == u'_'))
+    // ... or at the start of it, or at the start of the statement it is part of.
+    for (qsizetype i = location.offset, tries = 0; i < code.size() && tries < 8; ++i) {
+        if (code[i] != u'{')
             continue;
-        if (begin > 0 && end < text.size() && (text[begin - 1] == u'"' || text[begin - 1] == u'\'')
-                && text[end] == text[begin - 1]) {
-            --begin;
-            ++end;
-        }
-        qsizetype colon = end;
-        while (colon < text.size() && text[colon].isSpace())
-            ++colon;
-        if (colon >= text.size() || text[colon] != u':')
-            continue;
-
-        if (part == MemberValue) {
-            // The value is what follows the colon, up to the comma or the brace that ends the
-            // member. Strings and nested brackets may contain those, too.
-            qsizetype valueBegin = colon + 1;
-            while (valueBegin < text.size() && text[valueBegin].isSpace())
-                ++valueBegin;
-            qsizetype valueEnd = valueBegin;
-            int depth = 0;
-            QChar quote;
-            for (; valueEnd < text.size(); ++valueEnd) {
-                const QChar c = text[valueEnd];
-                if (!quote.isNull()) {
-                    if (c == u'\\')
-                        ++valueEnd;
-                    else if (c == quote)
-                        quote = QChar();
-                } else if (c == u'"' || c == u'\'' || c == u'`') {
-                    quote = c;
-                } else if (c == u'(' || c == u'[' || c == u'{') {
-                    ++depth;
-                } else if (c == u')' || c == u']' || c == u'}') {
-                    if (depth-- == 0)
-                        break;
-                } else if (c == u',' && depth == 0) {
-                    break;
-                }
-            }
-            while (valueEnd > valueBegin && text[valueEnd - 1].isSpace())
-                --valueEnd;
-            if (valueEnd > valueBegin) {
-                begin = valueBegin;
-                end = valueEnd;
-            }
-        }
-
-        for (qsizetype j = 0; j < begin; ++j) {
-            if (text[j] == u'\n') {
-                ++location.startLine;
-                location.startColumn = 1;
-            } else {
-                ++location.startColumn;
-            }
-        }
-        location.offset += begin;
-        location.length = end - begin;
-        return location;
+        if (isLiteral(i))
+            return locationInDocument(i, 1);
+        ++tries;
     }
     return location;
 }
 
-/*!
- * \internal
- * If \a value is an object literal that becomes a value of the structured value type
- * \a target, checks that the members it names are properties of that type. Something else
- * cannot be assigned: the conversion fails as a whole at run time.
- */
+QQmlJS::SourceLocation QQmlJSLinterTypePropagator::locationInDocument(
+        qsizetype begin, qsizetype length) const
+{
+    const QString code = m_logger->code();
+    const QStringView before = QStringView(code).left(begin);
+    return QQmlJS::SourceLocation(
+            quint32(begin), quint32(length), quint32(before.count(u'\n') + 1),
+            quint32(begin - before.lastIndexOf(u'\n')));
+}
+
+// Where the name or the value of a member of the object literal that starts at the given
+// location is written, or else the location of the literal
+QQmlJS::SourceLocation QQmlJSLinterTypePropagator::objectLiteralMemberLocation(
+        const QQmlJS::SourceLocation &literal, const QString &name, MemberPart part) const
+{
+    const auto members = writtenMembers(literal.isValid() ? qsizetype(literal.offset) : -1);
+    for (const WrittenMember &member : members) {
+        if (member.name != name)
+            continue;
+        return (part == MemberValue && member.valueEnd > member.valueBegin)
+                ? locationInDocument(member.valueBegin, member.valueEnd - member.valueBegin)
+                : locationInDocument(member.nameBegin, member.nameEnd - member.nameBegin);
+    }
+    return literal;
+}
+
+// An object literal that becomes a structured value can only name properties of that type.
 void QQmlJSLinterTypePropagator::checkStructuredValue(
-        QQmlJSRegisterContent value, const QQmlJSScope::ConstPtr &target, int depth)
+        QQmlJSRegisterContent value, const QQmlJSScope::ConstPtr &target,
+        const QQmlJS::SourceLocation &where, int depth)
 {
     if (depth > 8 || !value.isValid() || !target || !target->isStructured()
             || target->accessSemantics() != QQmlJSScope::AccessSemantics::Value) {
@@ -154,12 +209,21 @@ void QQmlJSLinterTypePropagator::checkStructuredValue(
     if (literal == m_objectLiterals.constEnd())
         return;
 
+    QStringList names;
+    for (qsizetype i = 0, end = literal->members.size(); i < end; ++i)
+        names.append(m_jsUnitGenerator->jsClassMember(literal->internalClassId, int(i)));
+
+    // A literal inside of another one starts where the value of the member is written.
+    const QString code = m_logger->code();
+    const QQmlJS::SourceLocation start
+            = (where.isValid() && where.offset < code.size() && code[where.offset] == u'{')
+                ? where
+                : objectLiteralLocation(literal->instructionOffset, names);
+
     for (qsizetype i = 0, end = literal->members.size(); i < end; ++i) {
-        const QString name
-                = m_jsUnitGenerator->jsClassMember(literal->internalClassId, int(i));
+        const QString &name = names[i];
         if (!target->hasProperty(name)) {
-            const QQmlJS::SourceLocation location
-                    = objectLiteralMemberLocation(literal->instructionOffset, name);
+            const QQmlJS::SourceLocation location = objectLiteralMemberLocation(start, name);
             std::optional<QQmlJSFixSuggestion> suggestion = QQmlJSUtils::didYouMean(
                     name, target->properties().keys(), m_logger->filePath(), location);
             m_logger->log(u"Member \"%1\" not found on type \"%2\""_s.arg(
@@ -169,10 +233,10 @@ void QQmlJSLinterTypePropagator::checkStructuredValue(
         }
 
         const QQmlJSScope::ConstPtr propertyType = target->property(name).type();
-
-        // JavaScript turns a string into a number or a boolean, and the other way round, without
-        // complaining. For "false" becoming true, that is rarely what was meant.
         const QQmlJSRegisterContent member = literal->members[i];
+        const QQmlJS::SourceLocation written
+                = objectLiteralMemberLocation(start, name, MemberValue);
+
         const auto kindOf = [this](const QQmlJSScope::ConstPtr &type) {
             if (!type)
                 return 0;
@@ -188,26 +252,20 @@ void QQmlJSLinterTypePropagator::checkStructuredValue(
             m_logger->log(u"Member \"%1\" of \"%2\" has type %3. The %4 assigned to it is coerced"_s.arg(
                                   name, target->internalName(), propertyType->internalName(),
                                   member.containedType()->internalName()),
-                          qmlStructuredValueCoercion,
-                          objectLiteralMemberLocation(
-                                  literal->instructionOffset, name, MemberValue));
+                          qmlStructuredValueCoercion, written);
         }
 
-        // A number written with a fraction, or one too large for an integer, does not survive
-        // in an integer property. Of a number that is computed we cannot tell.
+        // Only literals: a number that is computed may be whole.
         if (member.isValid() && member.variant() == QQmlJSRegisterContent::Literal
                 && member.containedType() == m_typeResolver->realType()
                 && m_typeResolver->isIntegral(propertyType)) {
             m_logger->log(u"Member \"%1\" of \"%2\" has type %3. The number assigned to it is "
                            "no %3 and is coerced"_s.arg(
                                   name, target->internalName(), propertyType->internalName()),
-                          qmlStructuredValueCoercion,
-                          objectLiteralMemberLocation(
-                                  literal->instructionOffset, name, MemberValue));
+                          qmlStructuredValueCoercion, written);
         }
 
-        // A member can be an object literal that becomes a structured value in turn.
-        checkStructuredValue(member, propertyType, depth + 1);
+        checkStructuredValue(member, propertyType, written, depth + 1);
     }
 }
 

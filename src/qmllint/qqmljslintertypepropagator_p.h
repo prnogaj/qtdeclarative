@@ -69,10 +69,23 @@ private:
 
     bool checkTypeResolved(const QQmlJSScope::ConstPtr &type);
     void checkStructuredValue(QQmlJSRegisterContent value, const QQmlJSScope::ConstPtr &target,
-                              int depth = 0);
+                              const QQmlJS::SourceLocation &where = {}, int depth = 0);
     enum MemberPart { MemberName, MemberValue };
+    struct WrittenMember
+    {
+        QString name;
+        qsizetype nameBegin = -1;
+        qsizetype nameEnd = -1;
+        qsizetype valueBegin = -1;
+        qsizetype valueEnd = -1;
+    };
+    QList<WrittenMember> writtenMembers(qsizetype start) const;
+    QQmlJS::SourceLocation objectLiteralLocation(
+            int instructionOffset, const QStringList &names) const;
+    QQmlJS::SourceLocation locationInDocument(qsizetype begin, qsizetype length) const;
     QQmlJS::SourceLocation objectLiteralMemberLocation(
-            int instructionOffset, const QString &name, MemberPart part = MemberName) const;
+            const QQmlJS::SourceLocation &literal, const QString &name,
+            MemberPart part = MemberName) const;
     void checkWrite(const QQmlJSRegisterContent &callBase, const QString &propertyName);
 
     QQmlSA::PassManager *m_passManager = nullptr;
