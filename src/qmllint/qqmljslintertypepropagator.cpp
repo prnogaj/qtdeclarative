@@ -193,6 +193,19 @@ void QQmlJSLinterTypePropagator::checkStructuredValue(
                                   literal->instructionOffset, name, MemberValue));
         }
 
+        // A number written with a fraction, or one too large for an integer, does not survive
+        // in an integer property. Of a number that is computed we cannot tell.
+        if (member.isValid() && member.variant() == QQmlJSRegisterContent::Literal
+                && member.containedType() == m_typeResolver->realType()
+                && m_typeResolver->isIntegral(propertyType)) {
+            m_logger->log(u"Member \"%1\" of \"%2\" has type %3. The number assigned to it is "
+                           "no %3 and is coerced"_s.arg(
+                                  name, target->internalName(), propertyType->internalName()),
+                          qmlStructuredValueCoercion,
+                          objectLiteralMemberLocation(
+                                  literal->instructionOffset, name, MemberValue));
+        }
+
         // A member can be an object literal that becomes a structured value in turn.
         checkStructuredValue(member, propertyType, depth + 1);
     }

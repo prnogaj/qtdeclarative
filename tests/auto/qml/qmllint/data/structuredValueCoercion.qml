@@ -17,4 +17,11 @@ QtObject {
     function fromProperty(): myStructuredType {
         return { number: root.text }
     }
+
+    // A number with a fraction loses it in an integer property. A whole number does not, and
+    // of a number that is computed we cannot tell.
+    property real factor: 1.5
+    property myStructuredType fraction: ({ number: 8.5 })
+    property myStructuredType whole: ({ number: 8.0 })
+    property myStructuredType computed: ({ number: root.factor * 2 })
 }
